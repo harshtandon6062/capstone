@@ -21,6 +21,109 @@ sys.path.insert(0, os.path.dirname(__file__))
 # because it creates a HandLandmarker at import time and needs CWD set first
 
 from ui_module import draw_ui
+from safety_controller import EmergencyStopError, SafetyController, SafetyState
+from config import (
+    CUBE_COLORS_RGBA,
+    CUBE_HALF_EXTENTS,
+    DESTINATION_SPOT_COLORS_RGBA,
+    DESTINATION_SPOT_HALF_EXTENTS,
+    DESTINATION_X,
+    DESTINATION_Z_OFFSET,
+    GRAB_Z,
+    GRIPPER_BASE_ORIENTATION,
+    GRIPPER_BASE_POSITION,
+    HOVER_Z,
+    INITIAL_GRIPPER_JOINT_POSITIONS,
+    INITIAL_KUKA_JOINT_POSITIONS,
+    LIFT_Z,
+    OBJECT_COUNT,
+    OBJECT_X,
+    OBJECT_Y_START,
+    OBJECT_Y_STEP,
+    OBJECT_Z,
+    ROBOT_BASE_ORIENTATION,
+    ROBOT_BASE_POSITION,
+    TABLE_BASE_ORIENTATION,
+    TABLE_BASE_POSITION,
+    DESTINATION_SPOT_HEIGHT,
+    DESTINATION_SPOT_RADIUS,
+    TEST_TUBE_HEIGHT,
+    TEST_TUBE_LIQUID_HEIGHT,
+    TEST_TUBE_RADIUS,
+    TEST_TUBE_RIM_RADIUS,
+    TEST_TUBE_RIM_THICKNESS,
+    TARGET_EULER,
+)
+
+
+def create_table(table_id):
+    """Make every table visual link a clean, solid white."""
+    for link_index in range(-1, p.getNumJoints(table_id)):
+        p.changeVisualShape(table_id, link_index, rgbaColor=[1.0, 1.0, 1.0, 1.0])
+
+
+def create_test_tube(position, color):
+    """Create a grabbable tube with simple collision and layered visuals."""
+    collision = p.createCollisionShape(
+        p.GEOM_CYLINDER,
+        radius=TEST_TUBE_RADIUS,
+        height=TEST_TUBE_HEIGHT,
+        collisionFramePosition=[0, 0, TEST_TUBE_HEIGHT / 2],
+    )
+    body_visual = p.createVisualShape(
+        p.GEOM_CYLINDER,
+        radius=TEST_TUBE_RADIUS,
+        length=TEST_TUBE_HEIGHT,
+        rgbaColor=color,
+        visualFramePosition=[0, 0, TEST_TUBE_HEIGHT / 2],
+    )
+    liquid_visual = p.createVisualShape(
+        p.GEOM_CYLINDER,
+        radius=TEST_TUBE_RADIUS * 0.82,
+        length=TEST_TUBE_LIQUID_HEIGHT,
+        rgbaColor=[color[0] * 0.75, color[1] * 0.75, color[2] * 0.75, 1.0],
+    )
+    rim_visual = p.createVisualShape(
+        p.GEOM_CYLINDER,
+        radius=TEST_TUBE_RIM_RADIUS,
+        length=TEST_TUBE_RIM_THICKNESS * 2,
+        rgbaColor=[0.9, 0.9, 0.9, 1.0],
+    )
+    tube_id = p.createMultiBody(
+        baseMass=0.1,
+        baseCollisionShapeIndex=collision,
+        baseVisualShapeIndex=body_visual,
+        basePosition=position,
+        linkMasses=[0, 0],
+        linkCollisionShapeIndices=[-1, -1],
+        linkVisualShapeIndices=[liquid_visual, rim_visual],
+        linkPositions=[
+            [0, 0, TEST_TUBE_LIQUID_HEIGHT / 2 + 0.003],
+            [0, 0, TEST_TUBE_HEIGHT + TEST_TUBE_RIM_THICKNESS],
+        ],
+        linkOrientations=[[0, 0, 0, 1], [0, 0, 0, 1]],
+        linkInertialFramePositions=[[0, 0, 0], [0, 0, 0]],
+        linkInertialFrameOrientations=[[0, 0, 0, 1], [0, 0, 0, 1]],
+        linkParentIndices=[0, 0],
+        linkJointTypes=[p.JOINT_FIXED, p.JOINT_FIXED],
+        linkJointAxis=[[0, 0, 0], [0, 0, 0]],
+    )
+    return tube_id
+
+
+def create_destination_spot(position, color):
+    """Create a circular placement marker with no collision geometry."""
+    visual = p.createVisualShape(
+        p.GEOM_CYLINDER,
+        radius=DESTINATION_SPOT_RADIUS,
+        length=DESTINATION_SPOT_HEIGHT,
+        rgbaColor=color,
+    )
+    return p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=visual,
+        basePosition=[position[0], position[1], position[2] - 0.025],
+    )
 
 
 def run_pick_and_place():
@@ -45,19 +148,20 @@ def run_pick_and_place():
     plane_id = p.loadURDF("plane.urdf")
     table_id = p.loadURDF(
         "table/table.urdf",
-        basePosition=[1.0, -0.2, 0.0],
-        baseOrientation=[0, 0, 0.7071, 0.7071]
+        basePosition=TABLE_BASE_POSITION,
+        baseOrientation=TABLE_BASE_ORIENTATION
     )
 
     kuka_id = p.loadURDF(
         "kuka_iiwa/model_vr_limits.urdf",
-        1.400000, -0.200000, 0.600000,
-        0.000000, 0.000000, 0.000000, 1.000000
+        *ROBOT_BASE_POSITION,
+        *ROBOT_BASE_ORIENTATION,
     )
 
     gripper_id = p.loadSDF(
         "gripper/wsg50_one_motor_gripper_new_free_base.sdf"
     )[0]
+    safety = SafetyController(p, kuka_id, gripper_id)
 
     # ── Attach gripper ──
     p.createConstraint(
@@ -72,17 +176,17 @@ def run_pick_and_place():
     p.changeConstraint(cid2, gearRatio=-1, erp=0.5, relativePositionTarget=0, maxForce=100)
 
     # ── Initial poses ──
-    init_joint_pos = [-0.0, -0.0, 0.0, 1.570793, 0.0, -1.036725, 0.000001]
+    init_joint_pos = INITIAL_KUKA_JOINT_POSITIONS
     for j in range(p.getNumJoints(kuka_id)):
         p.resetJointState(kuka_id, j, init_joint_pos[j])
         p.setJointMotorControl2(kuka_id, j, p.POSITION_CONTROL, init_joint_pos[j], 0)
 
     p.resetBasePositionAndOrientation(
         gripper_id,
-        [0.923103, -0.200000, 1.250036],
-        [-0.000000, 0.964531, -0.000002, -0.263970]
+        GRIPPER_BASE_POSITION,
+        GRIPPER_BASE_ORIENTATION
     )
-    init_gripper_pos = [0.0, -0.011130, -0.206421, 0.205143, -0.009999, 0.0, -0.010055, 0.0]
+    init_gripper_pos = INITIAL_GRIPPER_JOINT_POSITIONS
     for j in range(p.getNumJoints(gripper_id)):
         p.resetJointState(gripper_id, j, init_gripper_pos[j])
         p.setJointMotorControl2(gripper_id, j, p.POSITION_CONTROL, init_gripper_pos[j], 0)
@@ -90,35 +194,23 @@ def run_pick_and_place():
     num_kuka_joints = p.getNumJoints(kuka_id)
 
     # ── Spawn cubes ──
-    CUBE_COLORS = [
-        [1.0, 0.0, 0.0, 1], [0.0, 0.7, 0.0, 1], [0.0, 0.0, 1.0, 1],
-        [1.0, 0.9, 0.0, 1], [1.0, 0.0, 1.0, 1],
-    ]
     source_positions = []
     cubes = []
-    CUBE_Y_START, CUBE_Y_STEP, CUBE_X, CUBE_Z = -0.45, 0.12, 0.75, 0.65
 
-    for i in range(5):
-        y = CUBE_Y_START + i * CUBE_Y_STEP
-        pos = [CUBE_X, y, CUBE_Z]
+    for i in range(OBJECT_COUNT):
+        y = OBJECT_Y_START + i * OBJECT_Y_STEP
+        pos = [OBJECT_X, y, OBJECT_Z]
         source_positions.append(pos)
-        col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.025, 0.025, 0.025])
-        vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.025, 0.025, 0.025],
-                                   rgbaColor=CUBE_COLORS[i])
-        cubes.append(p.createMultiBody(baseMass=0.1, baseCollisionShapeIndex=col,
-                                        baseVisualShapeIndex=vis, basePosition=pos))
+        cubes.append(create_test_tube(pos, CUBE_COLORS_RGBA[i]))
 
-    # ── Destination spots ──
+    # ── White table and destination spots ──
+    create_table(table_id)
     dest_positions = []
-    DEST_X = 0.95
-    for i in range(5):
-        y = CUBE_Y_START + i * CUBE_Y_STEP
-        pos = [DEST_X, y, CUBE_Z]
+    for i in range(OBJECT_COUNT):
+        y = OBJECT_Y_START + i * OBJECT_Y_STEP
+        pos = [DESTINATION_X, y, OBJECT_Z]
         dest_positions.append(pos)
-        vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.03, 0.03, 0.002],
-                                   rgbaColor=[0.5, 0.5, 0.5, 0.5])
-        p.createMultiBody(baseMass=0, baseVisualShapeIndex=vis,
-                          basePosition=[pos[0], pos[1], 0.625])
+        create_destination_spot(pos, DESTINATION_SPOT_COLORS_RGBA[i])
 
     # ── Camera ──
     p.resetDebugVisualizerCamera(cameraDistance=1.8, cameraYaw=-40, cameraPitch=-35,
@@ -129,10 +221,11 @@ def run_pick_and_place():
     # ──────────────────────────────────────────────
     # ROBOT CONTROL FUNCTIONS (closures over local state)
     # ──────────────────────────────────────────────
-    TARGET_ORN = p.getQuaternionFromEuler([0, 1.01 * math.pi, 0])
-    HOVER_Z, GRAB_Z, LIFT_Z = 0.97, 0.97, 1.15
+    TARGET_ORN = p.getQuaternionFromEuler(TARGET_EULER)
+    safety_poll = lambda: None
 
     def reset_robot():
+        safety.require_motion()
         for j in range(p.getNumJoints(kuka_id)):
             p.resetJointState(kuka_id, j, init_joint_pos[j])
             p.setJointMotorControl2(kuka_id, j, p.POSITION_CONTROL, init_joint_pos[j], 0)
@@ -142,9 +235,13 @@ def run_pick_and_place():
             p.resetJointState(gripper_id, j, init_gripper_pos[j])
             p.setJointMotorControl2(gripper_id, j, p.POSITION_CONTROL, init_gripper_pos[j], 0)
         for _ in range(120):
-            p.stepSimulation()
+            if not safety.step_simulation(safety_poll, raise_on_stop=True):
+                return False
+        return True
 
     def move_to(target_pos, gripper_open, steps=150):
+        if not safety.wait_until_running(safety_poll):
+            return False
         gv = 0 if gripper_open else 1
         jp = p.calculateInverseKinematics(kuka_id, 6, target_pos, TARGET_ORN)
         for j in range(num_kuka_joints):
@@ -152,21 +249,30 @@ def run_pick_and_place():
         p.setJointMotorControl2(gripper_id, 4, p.POSITION_CONTROL, gv * 0.05, force=100)
         p.setJointMotorControl2(gripper_id, 6, p.POSITION_CONTROL, gv * 0.05, force=100)
         for _ in range(steps):
-            p.stepSimulation()
+            if not safety.step_simulation(safety_poll, raise_on_stop=True):
+                return False
             time.sleep(1 / 480)
+        return True
 
     def do_pick_and_place(src, dst, cube_id):
-        move_to([src[0], src[1], HOVER_Z], True, 200)
-        move_to([src[0], src[1], GRAB_Z], False, 150)
-        move_to([src[0], src[1], LIFT_Z], False, 200)
+        if not move_to([src[0], src[1], HOVER_Z], True, 200):
+            return False
+        if not move_to([src[0], src[1], GRAB_Z], False, 150):
+            return False
+        if not move_to([src[0], src[1], LIFT_Z], False, 200):
+            return False
         nw = max(5, int(abs(dst[1] - src[1]) / 0.05))
         for w in range(nw + 1):
             t = w / nw
-            move_to([src[0] + t*(dst[0]-src[0]), src[1] + t*(dst[1]-src[1]), LIFT_Z], False, 80)
-        move_to([dst[0], dst[1], GRAB_Z], False, 200)
-        move_to([dst[0], dst[1], GRAB_Z], True, 100)
-        move_to([dst[0], dst[1], HOVER_Z], True, 100)
-        reset_robot()
+            if not move_to([src[0] + t*(dst[0]-src[0]), src[1] + t*(dst[1]-src[1]), LIFT_Z], False, 80):
+                return False
+        if not move_to([dst[0], dst[1], GRAB_Z], False, 200):
+            return False
+        if not move_to([dst[0], dst[1], GRAB_Z], True, 100):
+            return False
+        if not move_to([dst[0], dst[1], HOVER_Z], True, 100):
+            return False
+        return reset_robot()
 
     # ──────────────────────────────────────────────
     # STATE MACHINE + MAIN LOOP
@@ -190,6 +296,13 @@ def run_pick_and_place():
     cv2.namedWindow("Pick and Place", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Pick and Place", 640, 700)
 
+    def poll_safety_input():
+        key = cv2.waitKey(1) & 0xFF
+        safety.handle_key(key)
+
+    safety_poll = poll_safety_input
+    previous_safety_gesture = None
+
     print("=" * 50)
     print("PICK AND PLACE MODE")
     print("Point L/R to navigate, Pinch to select")
@@ -212,8 +325,13 @@ def run_pick_and_place():
         gesture = detect_gesture(detect_frame)
         now = time.time()
 
+        safety.handle_gesture(gesture, previous_safety_gesture)
+        previous_safety_gesture = gesture
+
         # ── Gesture Navigation ──
-        if now - last_gesture_time > gesture_cooldown and system_state not in ("EXECUTING",):
+        if (safety.state is SafetyState.RUNNING
+            and now - last_gesture_time > gesture_cooldown
+            and system_state not in ("EXECUTING",)):
             if system_state in ("SELECT_SOURCE", "SELECT_DEST"):
                 if gesture == "point_right":
                     selected_idx = min(selected_idx + 1, 4)
@@ -256,15 +374,25 @@ def run_pick_and_place():
                     last_gesture_time = now
 
         # ── Execute ──
-        if system_state == "EXECUTING":
-            do_pick_and_place(source_positions[source_idx], dest_positions[dest_idx], cubes[source_idx])
-            block_placed[source_idx] = True
+        if system_state == "EXECUTING" and safety.state is SafetyState.RUNNING:
+            try:
+                completed = do_pick_and_place(
+                    source_positions[source_idx],
+                    dest_positions[dest_idx],
+                    cubes[source_idx],
+                )
+            except EmergencyStopError as error:
+                print(error)
+                completed = False
+            if completed:
+                block_placed[source_idx] = True
             system_state = "SELECT_SOURCE"
             source_idx = None
             dest_idx = None
             selected_idx = 0
 
-        p.stepSimulation()
+        if safety.state is not SafetyState.EMERGENCY_STOPPED:
+            safety.step_simulation(safety_poll)
 
         # ── Display ──
         frame = cv2.resize(frame, (640, 480))
@@ -282,16 +410,23 @@ def run_pick_and_place():
         glove_text = "GLOVE: ON" if blue_glove_mode else "GLOVE: OFF"
         cv2.putText(frame, glove_text, (520, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
-        ui = draw_ui(system_state, gesture, selected_idx, source_idx, dest_idx, block_placed)
+        display_state = (safety.state_name
+                 if safety.state is not SafetyState.RUNNING
+                 else system_state)
+        ui = draw_ui(display_state, gesture, selected_idx, source_idx, dest_idx, block_placed)
         cv2.imshow("Pick and Place", np.vstack((frame, ui)))
 
         key = cv2.waitKey(1) & 0xFF
+        safety.handle_key(key)
         if key == ord('q'):
             break
         elif key == ord('b'):
             blue_glove_mode = not blue_glove_mode
             print(f"  Blue glove mode: {'ON' if blue_glove_mode else 'OFF'}")
         elif key == ord('r'):
+            if safety.state is SafetyState.EMERGENCY_STOPPED:
+                print("Emergency stop remains active; press E to reset safety first.")
+                continue
             # Reset simulation
             for i, c in enumerate(cubes):
                 p.resetBasePositionAndOrientation(c, source_positions[i], [0, 0, 0, 1])
@@ -303,7 +438,7 @@ def run_pick_and_place():
             dest_idx = None
             block_placed = [False] * 5
             for _ in range(240):
-                p.stepSimulation()
+                safety.step_simulation(safety_poll)
         elif key == 8:  # backspace = go back (like thumb_left)
             if system_state == "CONFIRM_SOURCE":
                 system_state = "SELECT_SOURCE"
@@ -330,6 +465,9 @@ def run_pick_and_place():
                     selected_idx = 0
                 elif system_state == "CONFIRM_DEST":
                     system_state = "EXECUTING"
+
+        if safety.quit_requested:
+            break
 
     # Cleanup
     cap.release()

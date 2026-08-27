@@ -25,8 +25,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # ──────────────────────────────────────────────
 import tensorflow as tf
 import mediapipe as mp
+from model_loader import load_gesture_model
 
-model = tf.keras.models.load_model(os.path.join(SCRIPT_DIR, 'gesture_landmark_model.h5'))
+model = load_gesture_model(os.path.join(SCRIPT_DIR, 'gesture_landmark_model.h5'))
 classes = np.load(os.path.join(SCRIPT_DIR, 'classes.npy'))
 print(f"Loaded dynamic gesture model. Classes: {list(classes)}")
 

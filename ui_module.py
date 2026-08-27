@@ -12,6 +12,13 @@ BLOCK_COLORS_BGR = [
 ]
 
 BLOCK_NAMES = ["RED", "GRN", "BLU", "YLW", "MAG"]
+DESTINATION_SPOT_COLORS_BGR = [
+    (0, 0, 255),
+    (0, 180, 0),
+    (0, 140, 255),
+    (255, 0, 255),
+    (0, 255, 255),
+]
 
 
 def draw_ui(state, gesture, selected_idx, source_idx, dest_idx, block_placed):
@@ -29,7 +36,16 @@ def draw_ui(state, gesture, selected_idx, source_idx, dest_idx, block_placed):
     cv2.putText(panel, f"GESTURE: {gesture}", (350, 25), font, 0.65, (0, 255, 0), 2)
 
     # Instructions
-    if state == "SELECT_SOURCE":
+    if state == "RUNNING":
+        cv2.putText(panel, "Robot ready",
+                    (10, 50), font, 0.45, (0, 255, 0), 1)
+    elif state == "PAUSED":
+        cv2.putText(panel, "PAUSED - press P or open palm to resume",
+                    (10, 50), font, 0.45, (0, 200, 255), 1)
+    elif state == "EMERGENCY_STOPPED":
+        cv2.putText(panel, "EMERGENCY STOP - press E to re-enable",
+                    (10, 50), font, 0.45, (0, 0, 255), 1)
+    elif state == "SELECT_SOURCE":
         cv2.putText(panel, "Point L/R to select block, PINCH to choose",
                     (10, 50), font, 0.45, (200, 200, 200), 1)
     elif state == "CONFIRM_SOURCE":
@@ -77,9 +93,11 @@ def draw_ui(state, gesture, selected_idx, source_idx, dest_idx, block_placed):
     for i in range(5):
         x = 110 + i * 105
         y = 130
+        spot_color = DESTINATION_SPOT_COLORS_BGR[i]
 
-        cv2.rectangle(panel, (x, y), (x + 80, y + 40), (100, 100, 100), 2)
-        cv2.putText(panel, f"Spot {i+1}", (x + 8, y + 27), font, 0.4, (150, 150, 150), 1)
+        cv2.rectangle(panel, (x, y), (x + 80, y + 40), spot_color, -1)
+        cv2.rectangle(panel, (x, y), (x + 80, y + 40), (255, 255, 255), 2)
+        cv2.putText(panel, f"Spot {i+1}", (x + 8, y + 27), font, 0.4, (255, 255, 255), 1)
 
         # Selection highlight
         if state == "SELECT_DEST" and i == selected_idx:
