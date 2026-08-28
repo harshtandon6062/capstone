@@ -9,10 +9,10 @@ import pybullet as p
 import pybullet_data
 import cv2
 import numpy as np
-import time
 import math
 import sys
 import os
+import time
 
 # Add integrated dir to path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -57,9 +57,53 @@ from config import (
 
 
 def create_table(table_id):
-    """Make every table visual link a clean, solid white."""
+    """Make every table visual link a clean, solid white without its dark mesh texture."""
     for link_index in range(-1, p.getNumJoints(table_id)):
-        p.changeVisualShape(table_id, link_index, rgbaColor=[1.0, 1.0, 1.0, 1.0])
+        p.changeVisualShape(
+            table_id,
+            link_index,
+            rgbaColor=[1.0, 1.0, 1.0, 1.0],
+            textureUniqueId=-1,
+        )
+
+
+def open_camera():
+    """Open one DirectShow camera, configure MJPG, and validate warmed frames."""
+    print("[START] camera index=0", flush=True)
+    candidate = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    if not candidate.isOpened():
+        print("[WARN] camera unavailable - gesture control disabled", flush=True)
+        candidate.release()
+        return None
+
+    candidate.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    candidate.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    candidate.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    width = candidate.get(cv2.CAP_PROP_FRAME_WIDTH)
+    height = candidate.get(cv2.CAP_PROP_FRAME_HEIGHT)
+
+    frame = None
+    ret = False
+    for _ in range(20):
+        ret, frame = candidate.read()
+
+    if ret and frame is not None:
+        frame_min = int(frame.min())
+        frame_max = int(frame.max())
+        frame_mean = float(frame.mean())
+        print(
+            f"[CAMERA] ret={ret} frame_shape={frame.shape} dtype={frame.dtype} "
+            f"min={frame_min} max={frame_max} mean={frame_mean:.3f} "
+            f"size={width}x{height} fourcc={candidate.get(cv2.CAP_PROP_FOURCC)}",
+            flush=True,
+        )
+        if frame.ndim == 3 and frame.shape[2] == 3 and frame_max - frame_min > 5 and frame_mean > 1.0:
+            print("[OK] camera", flush=True)
+            return candidate
+
+    print("[WARN] camera unavailable - gesture control disabled", flush=True)
+    candidate.release()
+    return None
 
 
 def create_test_tube(position, color):
@@ -129,18 +173,57 @@ def create_destination_spot(position, color):
 def run_pick_and_place():
     """Run the full pick-and-place simulation. Returns when user presses 'q'."""
 
-    # Save and set CWD so gesture_module finds hand_landmarker.task locally
+    print("[START] application", flush=True)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     old_cwd = os.getcwd()
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(script_dir)
 
-    # Import here (not at top level) because gesture_module creates a
-    # HandLandmarker at import time and needs CWD set
-    from gesture_module import detect_gesture
+    print("[START] camera", flush=True)
+    cap = open_camera()
+
+    try:
+        print("[START] gesture modules", flush=True)
+        from gesture_controller import GestureController
+        from gesture_module import detect_gesture
+        from hand_landmark_provider import HandLandmarkProvider
+        print("[OK] gesture modules", flush=True)
+
+        print("[START] landmark provider", flush=True)
+        landmark_provider = HandLandmarkProvider(
+            model_asset_path=os.path.join(script_dir, "hand_landmarker.task")
+        )
+        print("[OK] landmark provider", flush=True)
+
+        print("[START] gesture model", flush=True)
+        from model_loader import load_gesture_model
+
+        dynamic_model = load_gesture_model(os.path.join(script_dir, "gesture_landmark_model.h5"))
+        dynamic_classes = np.load(os.path.join(script_dir, "classes.npy"))
+        dynamic_gesture_controller = GestureController(
+            dynamic_classes=list(dynamic_classes), cooldown=0.35
+        )
+        print(f"[OK] gesture model: {list(dynamic_classes)}", flush=True)
+    except Exception as error:
+        print(f"[ERROR] gesture initialization: {error!r}", flush=True)
+        cap.release()
+        os.chdir(old_cwd)
+        return False
 
     # ──────────────────────────────────────────────
     # PYBULLET SETUP
     # ──────────────────────────────────────────────
-    physics_client = p.connect(p.GUI)
+    print("[START] PyBullet", flush=True)
+    try:
+        physics_client = p.connect(p.GUI, options="--opengl2")
+        if physics_client < 0:
+            raise RuntimeError("p.connect(p.GUI) returned an invalid client id")
+    except Exception as error:
+        print(f"[ERROR] PyBullet initialization: {error!r}", flush=True)
+        landmark_provider.close()
+        cap.release()
+        os.chdir(old_cwd)
+        return False
+    print("[OK] PyBullet", flush=True)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.setGravity(0, 0, -10)
     p.setRealTimeSimulation(0)
@@ -193,6 +276,7 @@ def run_pick_and_place():
 
     num_kuka_joints = p.getNumJoints(kuka_id)
 
+    print("[START] scene", flush=True)
     # ── Spawn cubes ──
     source_positions = []
     cubes = []
@@ -211,6 +295,7 @@ def run_pick_and_place():
         pos = [DESTINATION_X, y, OBJECT_Z]
         dest_positions.append(pos)
         create_destination_spot(pos, DESTINATION_SPOT_COLORS_RGBA[i])
+    print("[OK] scene", flush=True)
 
     # ── Camera ──
     p.resetDebugVisualizerCamera(cameraDistance=1.8, cameraYaw=-40, cameraPitch=-35,
@@ -277,13 +362,6 @@ def run_pick_and_place():
     # ──────────────────────────────────────────────
     # STATE MACHINE + MAIN LOOP
     # ──────────────────────────────────────────────
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("ERROR: Cannot open webcam")
-        p.disconnect()
-        os.chdir(old_cwd)
-        return
-
     system_state = "SELECT_SOURCE"
     selected_idx = 0
     source_idx = None
@@ -302,19 +380,52 @@ def run_pick_and_place():
 
     safety_poll = poll_safety_input
     previous_safety_gesture = None
+    sequence_data = []
+    dynamic_sequence_length = 20
+    dynamic_confidence = 0.0
+    current_dynamic_gesture = "none"
 
+    print("[START] application loop", flush=True)
     print("=" * 50)
     print("PICK AND PLACE MODE")
     print("Point L/R to navigate, Pinch to select")
     print("Arrow keys + Enter for keyboard | R=reset | B=glove | Q=back")
     print("=" * 50)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    camera_diagnostic_count = 0
+    last_camera_diagnostic = 0.0
+    camera_connected = cap is not None
 
-        frame = cv2.flip(frame, 1)
+    while True:
+        raw_frame = None
+        ret = False
+        if cap is not None:
+            ret, raw_frame = cap.read()
+            if not ret or raw_frame is None:
+                print(f"[CAMERA] read failure ret={ret} frame_is_none={raw_frame is None}", flush=True)
+                cap.release()
+                cap = None
+                camera_connected = False
+
+        now = time.time()
+        if raw_frame is not None:
+            camera_diagnostic_count += 1
+        if raw_frame is not None and (camera_diagnostic_count <= 5 or now - last_camera_diagnostic >= 5.0):
+            frame_min = int(raw_frame.min())
+            frame_max = int(raw_frame.max())
+            frame_mean = float(raw_frame.mean())
+            print(
+                f"[CAMERA] ret={ret} frame_shape={raw_frame.shape} dtype={raw_frame.dtype} "
+                f"min={frame_min} max={frame_max} mean={frame_mean:.3f}",
+                flush=True,
+            )
+            if frame_max == 0:
+                print("[CAMERA] warning: camera returned a completely black frame", flush=True)
+            elif frame_max - frame_min <= 5:
+                print("[CAMERA] warning: camera returned a nearly uniform frame", flush=True)
+            last_camera_diagnostic = now
+
+        frame = cv2.flip(raw_frame, 1) if raw_frame is not None else np.zeros((480, 640, 3), dtype=np.uint8)
 
         # Blue glove: swap B and R channels so MediaPipe detects blue-gloved hands
         if blue_glove_mode:
@@ -322,8 +433,29 @@ def run_pick_and_place():
         else:
             detect_frame = frame
 
-        gesture = detect_gesture(detect_frame)
-        now = time.time()
+        gesture = "unknown"
+        dynamic_landmarks = np.zeros(63, dtype=np.float32)
+        if raw_frame is not None:
+            landmark_provider.update_from_frame(detect_frame)
+            gesture = detect_gesture(detect_frame, provider=landmark_provider)
+            dynamic_landmarks = landmark_provider.latest_landmarks.copy()
+        sequence_data.append(dynamic_landmarks)
+        if len(sequence_data) > dynamic_sequence_length:
+            sequence_data.pop(0)
+
+        if len(sequence_data) == dynamic_sequence_length:
+            input_data = np.expand_dims(np.array(sequence_data), axis=0)
+            preds = dynamic_model.predict(input_data, verbose=0)[0]
+            idx = np.argmax(preds)
+            dynamic_confidence = float(preds[idx])
+            current_dynamic_gesture = str(dynamic_classes[idx]) if preds[idx] > 0.60 else "none"
+
+        static_event = dynamic_gesture_controller.handle_static_gesture(gesture)
+        dynamic_event = dynamic_gesture_controller.handle_dynamic_gesture(current_dynamic_gesture, dynamic_confidence)
+        command = dynamic_gesture_controller.resolve_command(static_event, dynamic_event)
+
+        if command is not None:
+            print(f"Gesture command -> {command['source']}:{command['command']} ({command['confidence']:.2f})")
 
         safety.handle_gesture(gesture, previous_safety_gesture)
         previous_safety_gesture = gesture
@@ -398,6 +530,8 @@ def run_pick_and_place():
         frame = cv2.resize(frame, (640, 480))
         cv2.putText(frame, f"Gesture: {gesture}", (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        cv2.putText(frame, f"Dynamic: {current_dynamic_gesture} ({dynamic_confidence:.2f})",
+                (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
         # Show confirm hint
         if system_state == "CONFIRM_SOURCE":
@@ -414,7 +548,9 @@ def run_pick_and_place():
                  if safety.state is not SafetyState.RUNNING
                  else system_state)
         ui = draw_ui(display_state, gesture, selected_idx, source_idx, dest_idx, block_placed)
-        cv2.imshow("Pick and Place", np.vstack((frame, ui)))
+        if camera_connected:
+            cv2.imshow("Webcam", frame)
+        cv2.imshow("Pick and Place", ui)
 
         key = cv2.waitKey(1) & 0xFF
         safety.handle_key(key)
@@ -471,7 +607,9 @@ def run_pick_and_place():
 
     # Cleanup
     cap.release()
+    cv2.destroyWindow("Webcam")
     cv2.destroyWindow("Pick and Place")
+    landmark_provider.close()
     p.disconnect()
     os.chdir(old_cwd)
     print("Pick-and-place module closed.")
