@@ -24,7 +24,12 @@ from ui_module import draw_ui
 from safety_controller import EmergencyStopError, SafetyController, SafetyState
 from robot_controller import RobotController
 from commands import CommandInvoker, CommandMapper
+from object_registry import ObjectRegistry
+from perception import SimulatedPerception
 from config import (
+    CUBE_COLOR_NAMES,
+    DESTINATION_SPOT_COLOR_NAMES,
+    STATUS_MESSAGE_DURATION,
     CUBE_COLORS_RGBA,
     CUBE_HALF_EXTENTS,
     DESTINATION_SPOT_COLORS_RGBA,
@@ -72,13 +77,36 @@ def create_table(table_id):
         )
 
 
+def _camera_backends():
+    """Backends to try, in order, for whichever platform we are on.
+
+    cv2.CAP_DSHOW is DirectShow and exists only on Windows; requesting it on
+    Linux or macOS fails to open the device at all. cv2.CAP_ANY lets OpenCV pick
+    the right backend for the host, so it goes first and the rest are fallbacks.
+    """
+    backends = [("auto", cv2.CAP_ANY)]
+    if sys.platform.startswith("win"):
+        backends.append(("dshow", cv2.CAP_DSHOW))
+    elif sys.platform.startswith("linux"):
+        backends.append(("v4l2", getattr(cv2, "CAP_V4L2", cv2.CAP_ANY)))
+    return backends
+
+
 def open_camera():
-    """Open one DirectShow camera, configure MJPG, and validate warmed frames."""
+    """Open the webcam using a backend the host actually supports."""
     print("[START] camera index=0", flush=True)
-    candidate = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    if not candidate.isOpened():
+
+    candidate = None
+    for name, backend in _camera_backends():
+        probe = cv2.VideoCapture(0, backend)
+        if probe.isOpened():
+            print(f"[CAMERA] opened with backend={name}", flush=True)
+            candidate = probe
+            break
+        probe.release()
+
+    if candidate is None:
         print("[WARN] camera unavailable - gesture control disabled", flush=True)
-        candidate.release()
         return None
 
     candidate.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -210,7 +238,8 @@ def run_pick_and_place():
         print(f"[OK] gesture model: {list(dynamic_classes)}", flush=True)
     except Exception as error:
         print(f"[ERROR] gesture initialization: {error!r}", flush=True)
-        cap.release()
+        if cap is not None:
+            cap.release()
         os.chdir(old_cwd)
         return False
 
@@ -282,25 +311,44 @@ def run_pick_and_place():
     num_kuka_joints = p.getNumJoints(kuka_id)
 
     print("[START] scene", flush=True)
-    # ── Spawn cubes ──
-    source_positions = []
-    cubes = []
+    # The perception source is what the rest of the application asks about the
+    # workspace. Today it reads PyBullet directly; swapping in a camera-backed
+    # source later changes nothing below this point.
+    perception = SimulatedPerception(p)
 
+    source_positions = []
     for i in range(OBJECT_COUNT):
         y = OBJECT_Y_START + i * OBJECT_Y_STEP
         pos = [OBJECT_X, y, OBJECT_Z]
         source_positions.append(pos)
-        cubes.append(create_test_tube(pos, CUBE_COLORS_RGBA[i]))
+        color = CUBE_COLORS_RGBA[i]
+        name = CUBE_COLOR_NAMES[i]
+        perception.add_source(
+            handle=create_test_tube(pos, color),
+            label=f"{name.title()} tube",
+            color_name=name,
+            color_rgba=color,
+        )
 
     # ── White table and destination spots ──
     create_table(table_id)
-    dest_positions = []
     for i in range(OBJECT_COUNT):
         y = OBJECT_Y_START + i * OBJECT_Y_STEP
         pos = [DESTINATION_X, y, OBJECT_Z]
-        dest_positions.append(pos)
-        create_destination_spot(pos, DESTINATION_SPOT_COLORS_RGBA[i])
-    print("[OK] scene", flush=True)
+        color = DESTINATION_SPOT_COLORS_RGBA[i]
+        name = DESTINATION_SPOT_COLOR_NAMES[i]
+        perception.add_destination(
+            handle=create_destination_spot(pos, color),
+            label=f"{name.title()} spot",
+            color_name=name,
+            color_rgba=color,
+            position=pos,
+        )
+
+    registry = ObjectRegistry(perception)
+    source_handles = [obj.handle for obj in registry.sources]
+    print(f"[OK] scene: {registry.count('source')} tubes, "
+          f"{registry.count('destination')} spots", flush=True)
 
     # ── Camera ──
     p.resetDebugVisualizerCamera(cameraDistance=1.8, cameraYaw=-40, cameraPitch=-35,
@@ -326,11 +374,9 @@ def run_pick_and_place():
     # STATE MACHINE + MAIN LOOP
     # ──────────────────────────────────────────────
     system_state = "SELECT_SOURCE"
-    selected_idx = 0
-    source_idx = None
-    dest_idx = None
-    block_placed = [False] * 5
-    dest_placed = [False] * 5
+    selected_handle = registry.first_available("source")
+    source_handle = None
+    dest_handle = None
     last_gesture_time = 0
     gesture_cooldown = GESTURE_COOLDOWN
     undo_gesture_cooldown = UNDO_GESTURE_COOLDOWN
@@ -354,6 +400,24 @@ def run_pick_and_place():
     dynamic_confidence = 0.0
     current_dynamic_gesture = "none"
     status_message = ""
+    status_message_time = 0.0
+
+    def set_status(message):
+        """Show a panel message long enough for a human to actually read it."""
+        nonlocal status_message, status_message_time
+        status_message = message
+        status_message_time = time.time()
+
+    def selection_kind():
+        return "source" if system_state in ("SELECT_SOURCE", "CONFIRM_SOURCE") else "destination"
+
+    def release_placement(command):
+        """Return the tube and spot a command consumed back to the available pool."""
+        registry.release(command.source_object)
+        for spot in registry.destinations:
+            if list(spot.position) == list(command.destination):
+                registry.release(spot.handle)
+                break
 
     print("[START] application loop", flush=True)
     print("=" * 50)
@@ -442,7 +506,20 @@ def run_pick_and_place():
 
         safety.handle_gesture(gesture, previous_safety_gesture)
         previous_safety_gesture = gesture
-        status_message = ""
+
+        # An emergency stop must not leave a confirmed action queued. Clearing
+        # the stop should hand control back to the operator, not silently launch
+        # the move that was interrupted.
+        if safety.consume_estop_interrupt():
+            if system_state == "EXECUTING":
+                set_status("STOPPED - RE-SELECT")
+            system_state = "SELECT_SOURCE"
+            source_handle = None
+            dest_handle = None
+            selected_handle = registry.first_available("source")
+
+        if status_message and now - status_message_time > STATUS_MESSAGE_DURATION:
+            status_message = ""
 
         # ── Gesture Navigation ──
         if (safety.state is SafetyState.RUNNING
@@ -454,101 +531,85 @@ def run_pick_and_place():
                     if now - last_gesture_time > undo_gesture_cooldown:
                         if command_invoker.undo():
                             print("Last pick-and-place undone via gesture.")
-                            undone_command = command_invoker.last_undone_command
-                            undone_object = undone_command.source_object
-                            if undone_object in cubes:
-                                block_placed[cubes.index(undone_object)] = False
-                            if undone_command.destination in dest_positions:
-                                dest_placed[dest_positions.index(undone_command.destination)] = False
-                            status_message = "UNDO EXECUTED"
+                            release_placement(command_invoker.last_undone_command)
+                            set_status("UNDO EXECUTED")
                         else:
-                            status_message = "UNDO FAILED"
+                            set_status("UNDO FAILED")
                         last_gesture_time = now
                 else:
                     # No-op: do not block future gestures or leave the menu stuck.
                     last_gesture_time = now
 
             if system_state in ("SELECT_SOURCE", "SELECT_DEST"):
-                if gesture == "point_right":
-                    next_idx = selected_idx
-                    step = 1
-                    while True:
-                        next_idx = (next_idx + step) % 5
-                        if system_state == "SELECT_SOURCE":
-                            if not block_placed[next_idx]:
-                                selected_idx = next_idx
-                                break
-                        else:
-                            if not dest_placed[next_idx]:
-                                selected_idx = next_idx
-                                break
-                    last_gesture_time = now
-                elif gesture == "point_left":
-                    next_idx = selected_idx
-                    step = -1
-                    for _ in range(5):
-                        next_idx = (next_idx + step) % 5
-                        if system_state == "SELECT_SOURCE":
-                            if not block_placed[next_idx]:
-                                selected_idx = next_idx
-                                break
-                        else:
-                            if not dest_placed[next_idx]:
-                                selected_idx = next_idx
-                                break
+                kind = selection_kind()
+                if gesture in ("point_right", "point_left"):
+                    step = 1 if gesture == "point_right" else -1
+                    # Returns None when nothing is left; it never spins.
+                    next_handle = registry.next_available(kind, selected_handle, step)
+                    if next_handle is None:
+                        set_status(f"NO {kind.upper()}S LEFT")
+                    else:
+                        selected_handle = next_handle
                     last_gesture_time = now
                 elif gesture == "pinch":
-                    if system_state == "SELECT_SOURCE" and not block_placed[selected_idx]:
-                        source_idx = selected_idx
-                        system_state = "CONFIRM_SOURCE"
-                        print(f"Source highlighted: Block {source_idx + 1} — Thumbs up to confirm, Thumb left to cancel")
-                    elif system_state == "SELECT_DEST" and not dest_placed[selected_idx]:
-                        dest_idx = selected_idx
-                        system_state = "CONFIRM_DEST"
-                        print(f"Dest highlighted: Spot {dest_idx + 1} — Thumbs up to confirm, Thumb left to cancel")
+                    chosen = registry.by_handle(selected_handle)
+                    if chosen is not None and chosen.available:
+                        if system_state == "SELECT_SOURCE":
+                            source_handle = selected_handle
+                            system_state = "CONFIRM_SOURCE"
+                        else:
+                            dest_handle = selected_handle
+                            system_state = "CONFIRM_DEST"
+                        print(f"Highlighted: {chosen.label} — Thumbs up to confirm, Thumb left to cancel")
                     last_gesture_time = now
 
             elif system_state == "CONFIRM_SOURCE":
                 if gesture == "thumbs_up":
                     system_state = "SELECT_DEST"
-                    selected_idx = 0
-                    print(f"Source CONFIRMED: Block {source_idx + 1}")
+                    selected_handle = registry.first_available("destination")
+                    chosen = registry.by_handle(source_handle)
+                    print(f"Source CONFIRMED: {chosen.label if chosen else source_handle}")
                     last_gesture_time = now
                 elif gesture == "thumb_left":
                     system_state = "SELECT_SOURCE"
-                    source_idx = None
+                    source_handle = None
                     print("Source cancelled — re-select")
                     last_gesture_time = now
 
             elif system_state == "CONFIRM_DEST":
                 if gesture == "thumbs_up":
                     system_state = "EXECUTING"
-                    print(f"Dest CONFIRMED: Spot {dest_idx + 1}")
+                    chosen = registry.by_handle(dest_handle)
+                    print(f"Destination CONFIRMED: {chosen.label if chosen else dest_handle}")
                     last_gesture_time = now
                 elif gesture == "thumb_left":
                     system_state = "SELECT_DEST"
-                    dest_idx = None
-                    print("Dest cancelled — re-select")
+                    dest_handle = None
+                    print("Destination cancelled — re-select")
                     last_gesture_time = now
 
         # ── Execute ──
         if system_state == "EXECUTING" and safety.state is SafetyState.RUNNING:
+            destination = registry.by_handle(dest_handle)
+            completed = False
             try:
                 command = command_mapper.pick_and_place(
-                    cubes[source_idx],
-                    dest_positions[dest_idx],
+                    source_handle,
+                    list(destination.position),
                 )
                 completed = command_invoker.execute(command)
             except EmergencyStopError as error:
                 print(error)
-                completed = False
             if completed:
-                block_placed[source_idx] = True
-                dest_placed[dest_idx] = True
+                registry.consume(source_handle)
+                registry.consume(dest_handle)
+                set_status("PLACED")
+            else:
+                set_status("MOVE FAILED")
             system_state = "SELECT_SOURCE"
-            source_idx = None
-            dest_idx = None
-            selected_idx = 0
+            source_handle = None
+            dest_handle = None
+            selected_handle = registry.first_available("source")
 
         if safety.state is not SafetyState.EMERGENCY_STOPPED:
             safety.step_simulation(safety_poll)
@@ -559,16 +620,18 @@ def run_pick_and_place():
         cv2.putText(frame, f"Dynamic: {current_dynamic_gesture} ({dynamic_confidence:.2f})",
                 (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
-        # Show confirm hint
+        # Show confirm hint, naming the object rather than an index
+        pending = None
         if system_state == "CONFIRM_SOURCE":
-            cv2.putText(frame, f"Confirm Block {source_idx+1}? Thumbs Up / Thumb Left", (10, 470),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+            pending = registry.by_handle(source_handle)
         elif system_state == "CONFIRM_DEST":
-            cv2.putText(frame, f"Confirm Spot {dest_idx+1}? Thumbs Up / Thumb Left", (10, 470),
+            pending = registry.by_handle(dest_handle)
+        if pending is not None:
+            cv2.putText(frame, f"Confirm {pending.label}? Thumbs Up / Thumb Left", (10, 470),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
         if status_message:
-            color = (0, 255, 255) if status_message == "UNDO EXECUTED" else (0, 0, 255)
+            color = (0, 0, 255) if "FAIL" in status_message or "STOPPED" in status_message else (0, 255, 255)
             cv2.putText(frame, status_message, (10, 445),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
@@ -578,15 +641,16 @@ def run_pick_and_place():
         display_state = (safety.state_name
                  if safety.state is not SafetyState.RUNNING
                  else system_state)
+        registry.refresh()
         ui = draw_ui(
             display_state,
             gesture,
-            selected_idx,
-            source_idx,
-            dest_idx,
-            block_placed,
-            dest_placed,
+            registry,
+            selected_handle,
+            source_handle,
+            dest_handle,
             command_invoker.can_undo,
+            status_message,
         )
         if camera_connected:
             cv2.imshow("Webcam", frame)
@@ -604,17 +668,17 @@ def run_pick_and_place():
                 print("Emergency stop remains active; press E to reset safety first.")
                 continue
             # Reset simulation
-            for i, c in enumerate(cubes):
-                p.resetBasePositionAndOrientation(c, source_positions[i], [0, 0, 0, 1])
-                p.resetBaseVelocity(c, [0, 0, 0], [0, 0, 0])
+            for handle, home in zip(source_handles, source_positions):
+                p.resetBasePositionAndOrientation(handle, home, [0, 0, 0, 1])
+                p.resetBaseVelocity(handle, [0, 0, 0], [0, 0, 0])
             robot_controller.reset_robot()
             command_invoker.clear_history()
+            registry.reset().refresh()
             system_state = "SELECT_SOURCE"
-            selected_idx = 0
-            source_idx = None
-            dest_idx = None
-            block_placed = [False] * 5
-            dest_placed = [False] * 5
+            source_handle = None
+            dest_handle = None
+            selected_handle = registry.first_available("source")
+            set_status("SCENE RESET")
             for _ in range(240):
                 safety.step_simulation(safety_poll)
         elif key == ord('u'):
@@ -622,47 +686,58 @@ def run_pick_and_place():
                 print("Emergency stop remains active; press E to reset safety first.")
             elif command_invoker.undo():
                 print("Last pick-and-place undone.")
-                undone_command = command_invoker.last_undone_command
-                undone_object = undone_command.source_object
-                if undone_object in cubes:
-                    block_placed[cubes.index(undone_object)] = False
-                if undone_command.destination in dest_positions:
-                    dest_placed[dest_positions.index(undone_command.destination)] = False
+                release_placement(command_invoker.last_undone_command)
+                set_status("UNDO EXECUTED")
             else:
                 print("Nothing to undo.")
+                set_status("NOTHING TO UNDO")
         elif key == 8:  # backspace = go back (like thumb_left)
             if system_state == "CONFIRM_SOURCE":
                 system_state = "SELECT_SOURCE"
-                source_idx = None
+                source_handle = None
             elif system_state == "CONFIRM_DEST":
                 system_state = "SELECT_DEST"
-                dest_idx = None
+                dest_handle = None
         elif system_state in ("SELECT_SOURCE", "SELECT_DEST"):
+            kind = selection_kind()
             if key == 83 or key == ord('d'):
-                selected_idx = min(selected_idx + 1, 4)
+                nxt = registry.next_available(kind, selected_handle, 1)
+                if nxt is None:
+                    set_status(f"NO {kind.upper()}S LEFT")
+                else:
+                    selected_handle = nxt
             elif key == 81 or key == ord('a'):
-                selected_idx = max(selected_idx - 1, 0)
+                nxt = registry.next_available(kind, selected_handle, -1)
+                if nxt is None:
+                    set_status(f"NO {kind.upper()}S LEFT")
+                else:
+                    selected_handle = nxt
             elif key == 13 or key == ord(' '):
-                if system_state == "SELECT_SOURCE" and not block_placed[selected_idx]:
-                    source_idx = selected_idx
-                    system_state = "CONFIRM_SOURCE"
-                elif system_state == "SELECT_DEST" and not dest_placed[selected_idx]:
-                    dest_idx = selected_idx
-                    system_state = "CONFIRM_DEST"
+                chosen = registry.by_handle(selected_handle)
+                if chosen is not None and chosen.available:
+                    if system_state == "SELECT_SOURCE":
+                        source_handle = selected_handle
+                        system_state = "CONFIRM_SOURCE"
+                    else:
+                        dest_handle = selected_handle
+                        system_state = "CONFIRM_DEST"
         elif system_state in ("CONFIRM_SOURCE", "CONFIRM_DEST"):
             if key == 13 or key == ord(' '):  # enter = confirm (like thumbs_up)
                 if system_state == "CONFIRM_SOURCE":
                     system_state = "SELECT_DEST"
-                    selected_idx = 0
+                    selected_handle = registry.first_available("destination")
                 elif system_state == "CONFIRM_DEST":
                     system_state = "EXECUTING"
 
         if safety.quit_requested:
             break
 
-    # Cleanup
-    cap.release()
-    cv2.destroyWindow("Webcam")
+    # Cleanup. cap is None whenever the camera never opened or dropped out
+    # mid-run, so every teardown step has to tolerate a missing resource.
+    if cap is not None:
+        cap.release()
+    if camera_connected:
+        cv2.destroyWindow("Webcam")
     cv2.destroyWindow("Pick and Place")
     landmark_provider.close()
     p.disconnect()

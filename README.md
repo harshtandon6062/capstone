@@ -86,17 +86,46 @@ Adjust these values in one place to tune gesture responsiveness.
 Launcher (Dynamic Gesture Recognition)
     │
     ├── Grasp held 3s ──► Pick & Place Module
-  │                        ├── Gestures / Keyboard
-  │                        │       └── CommandMapper (confirmed destination)
-  │                        ├── CommandInvoker → CommandHistory
-  │                        ├── PickPlaceCommand
-  │                        ├── RobotController
-  │                        │       └── PyBullet (Kuka + WSG50 + Cubes)
-  │                        ├── Static Gesture Control (MediaPipe)
-  │                        └── UI Panel (OpenCV)
+    │                        │
+    │                        ├── PerceptionSource ──► ObjectRegistry
+    │                        │     (what is in the workspace, and where)
+    │                        │            ├──► UI Panel  (what may be selected)
+    │                        │            └──► Commands  (where to move)
+    │                        │
+    │                        ├── Gestures / Keyboard
+    │                        │       └── CommandMapper (confirmed destination)
+    │                        ├── CommandInvoker → CommandHistory
+    │                        ├── PickPlaceCommand
+    │                        ├── SafetyController (gates every motion step)
+    │                        └── RobotController
+    │                                └── PyBullet (Kuka + WSG50 + tubes)
     │
     └── Q pressed ──► Exit
 ```
+
+### The object registry
+
+`ObjectRegistry` is the single description of what is in the workspace. A
+`PerceptionSource` fills it, the panel reads it to decide what can be selected,
+and commands read it to decide where to move. Objects are referred to by
+identity (`Red tube`) rather than by list index, so nothing downstream depends on
+how many objects exist or what order they are in.
+
+Colour lives in the registry once. The panel derives its swatch from the same
+RGBA value the simulation renders, so the two cannot disagree.
+
+`SimulatedPerception` currently reads poses straight from PyBullet. Replacing it
+with a camera-backed source returning the same observation shape requires no
+change anywhere else.
+
+### Known limitation: no motion planning
+
+`RobotController.move_to()` sets inverse-kinematics joint targets directly. There
+is no path planning and no collision checking, so the arm can sweep sideways
+through an object on the way to a target. `approach_from_above()` mitigates this
+by travelling at clearance height and descending vertically, but it is not a
+substitute for a planner. Targets close to the robot's forward axis remain the
+worst case, because IK can flip configuration there and swing the arm wide.
 
 `PickPlaceCommand` stores the source object's position and orientation before
 execution. Undo visibly moves the robot to the current object, closes and

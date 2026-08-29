@@ -17,12 +17,17 @@ class EmergencyStopError(RuntimeError):
 class SafetyController:
     """Owns safety transitions and prevents robot commands while unsafe."""
 
-    def __init__(self, physics, robot_id=None, gripper_id=None):
+    def __init__(self, physics, robot_id=None, gripper_id=None, poll_every=4):
         self.physics = physics
         self.robot_id = robot_id
         self.gripper_id = gripper_id
         self.state = SafetyState.RUNNING
         self.quit_requested = False
+        # How often to read operator input while stepping. Every step is
+        # wasteful, never is unsafe.
+        self.poll_every = max(1, int(poll_every))
+        self._poll_counter = 0
+        self.estop_interrupted = False
 
     @property
     def state_name(self):
@@ -57,6 +62,9 @@ class SafetyController:
     def emergency_stop(self):
         if self.state is not SafetyState.EMERGENCY_STOPPED:
             self.state = SafetyState.EMERGENCY_STOPPED
+            # Latched until someone reads it. Clearing the stop must not silently
+            # resume whatever action was pending when it fired.
+            self.estop_interrupted = True
             self._stop_robot()
         return self.state
 
@@ -65,6 +73,12 @@ class SafetyController:
         if self.state is SafetyState.EMERGENCY_STOPPED:
             self.state = SafetyState.RUNNING
         return self.state
+
+    def consume_estop_interrupt(self):
+        """Return True once after an emergency stop, so callers can re-arm safely."""
+        interrupted = self.estop_interrupted
+        self.estop_interrupted = False
+        return interrupted
 
     def handle_key(self, key):
         if key == ord("q"):
@@ -104,6 +118,15 @@ class SafetyController:
         return not self.quit_requested
 
     def step_simulation(self, poll=None, raise_on_stop=False):
+        # Poll before deciding anything. A long motion runs entirely inside this
+        # method while the state is RUNNING, so if operator input were only read
+        # in the paused branch of wait_until_running(), pause and emergency stop
+        # would be unreachable during exactly the motion they exist to interrupt.
+        if poll is not None:
+            self._poll_counter += 1
+            if self._poll_counter >= self.poll_every:
+                self._poll_counter = 0
+                poll()
         try:
             if not self.wait_until_running(poll):
                 return False

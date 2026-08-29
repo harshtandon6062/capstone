@@ -106,11 +106,23 @@ class RobotController:
     def _move_with_object(self, object_id, target_position, steps=150):
         return self.move_to(target_position, False, steps)
 
+    def approach_from_above(self, x, y, gripper_open, steps=150):
+        """Travel at clearance height first, then descend straight down.
+
+        move_to() only sets IK joint targets - there is no path planning and no
+        collision checking, so travelling directly to grasp height lets the arm
+        sweep sideways through whatever is in the way and knock it over. Going up
+        and over first keeps the horizontal leg of the motion above the objects.
+        """
+        if not self.move_to([x, y, LIFT_Z], gripper_open, steps):
+            return False
+        return self.move_to([x, y, HOVER_Z], gripper_open, max(60, steps // 2))
+
     def pick_and_place(self, source_object, destination):
         source, _ = self.get_object_state(source_object)
         grasp_constraint = None
         try:
-            if not self.move_to([source[0], source[1], HOVER_Z], True, 200):
+            if not self.approach_from_above(source[0], source[1], True, 200):
                 return False
             if not self.move_to([source[0], source[1], GRAB_Z], False, 150):
                 return False
@@ -150,8 +162,8 @@ class RobotController:
         current_position, _ = self.get_object_state(source_object)
         grasp_constraint = None
         try:
-            if not self.move_to(
-                [current_position[0], current_position[1], HOVER_Z], True, 200
+            if not self.approach_from_above(
+                current_position[0], current_position[1], True, 200
             ):
                 return False
             if not self.move_to(

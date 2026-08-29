@@ -30,6 +30,12 @@ DESTINATION_SPOT_COLORS_RGBA = [
     [0.0, 0.8, 0.8, 0.9],
 ]
 
+# Names are paired positionally with the RGBA values above. The UI derives its
+# panel colours from those same RGBA values, so the panel and the simulation
+# cannot drift apart.
+CUBE_COLOR_NAMES = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA"]
+DESTINATION_SPOT_COLOR_NAMES = ["RED", "GREEN", "ORANGE", "PURPLE", "CYAN"]
+
 OBJECT_COUNT = 5
 CUBE_HALF_EXTENTS = [0.025, 0.025, 0.025]
 DESTINATION_SPOT_HALF_EXTENTS = [0.03, 0.03, 0.002]
@@ -51,6 +57,10 @@ DESTINATION_Z_OFFSET = -0.025
 GESTURE_COOLDOWN = 1.0
 UNDO_GESTURE_COOLDOWN = 10.0
 GESTURE_HOLD_DURATION = 1.0
+
+# How long a transient panel message stays on screen (seconds). Without this a
+# message drawn on one frame vanishes in about 30 ms and is never read.
+STATUS_MESSAGE_DURATION = 2.5
 
 TARGET_EULER = [0, 1.01 * 3.141592653589793, 0]
 HOVER_Z = 0.97

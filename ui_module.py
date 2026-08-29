@@ -1,130 +1,141 @@
+"""Operator panel.
+
+Everything drawn here comes from the object registry, including colour. There is
+no second colour table to keep in step with the simulation.
+"""
+
 import cv2
 import numpy as np
 
 font = cv2.FONT_HERSHEY_SIMPLEX
 
-BLOCK_COLORS_BGR = [
-    (0, 0, 255),     # red
-    (0, 180, 0),     # green
-    (255, 0, 0),     # blue
-    (0, 200, 255),   # yellow
-    (255, 0, 255),   # magenta
-]
+PANEL_WIDTH = 640
+PANEL_HEIGHT = 235
 
-BLOCK_NAMES = ["RED", "GRN", "BLU", "YLW", "MAG"]
-DESTINATION_SPOT_COLORS_BGR = [
-    (0, 0, 255),
-    (0, 180, 0),
-    (0, 140, 255),
-    (255, 0, 255),
-    (0, 255, 255),
-]
+INSTRUCTIONS = {
+    "RUNNING": ("Robot ready", (0, 255, 0)),
+    "PAUSED": ("PAUSED - press P or open palm to resume", (0, 200, 255)),
+    "EMERGENCY_STOPPED": ("EMERGENCY STOP - press E to re-enable", (0, 0, 255)),
+    "SELECT_SOURCE": ("Point L/R to select a tube, PINCH to choose", (200, 200, 200)),
+    "CONFIRM_SOURCE": ("THUMBS UP to confirm | THUMB LEFT to cancel", (0, 255, 255)),
+    "SELECT_DEST": ("Point L/R to select a spot, PINCH to choose", (200, 200, 200)),
+    "CONFIRM_DEST": ("THUMBS UP to confirm | THUMB LEFT to cancel", (0, 255, 255)),
+    "EXECUTING": ("Robot is moving...", (0, 200, 255)),
+}
 
 
-def draw_ui(state, gesture, selected_idx, source_idx, dest_idx, block_placed,
-            dest_placed, undo_available=False):
-    """
-    Draw UI panel with two rows:
-      Row 1: Source blocks (colored squares)
-      Row 2: Destination spots (empty squares)
+def _readable_text_color(bgr):
+    """Pick black or white lettering so the label stays legible on any swatch."""
+    blue, green, red = bgr
+    luminance = 0.114 * blue + 0.587 * green + 0.299 * red
+    return (0, 0, 0) if luminance > 140 else (255, 255, 255)
 
-    block_placed: list of bools, True if block i has been placed already
-    dest_placed: list of bools, True if spot i is already occupied
-    """
-    panel = np.zeros((235, 640, 3), dtype=np.uint8)
 
-    # State and gesture
+def _draw_row(panel, objects, y, selected_handle, chosen_handle, is_selecting,
+              is_confirming, used_caption):
+    """Draw one row of swatches, spaced to fit however many objects there are."""
+    if not objects:
+        return
+
+    count = len(objects)
+    left = 110
+    span = PANEL_WIDTH - left - 15
+    cell = min(80, max(30, span // count - 8))
+    gap = (span - cell * count) // max(1, count - 1) if count > 1 else 0
+
+    for position, obj in enumerate(objects):
+        x = left + position * (cell + gap)
+
+        if obj.consumed:
+            cv2.rectangle(panel, (x, y), (x + cell, y + 40), (60, 60, 60), 1)
+            cv2.putText(panel, used_caption, (x + 6, y + 27), font, 0.4, (80, 80, 80), 1)
+            continue
+
+        color = obj.color_bgr
+        cv2.rectangle(panel, (x, y), (x + cell, y + 40), color, -1)
+        cv2.rectangle(panel, (x, y), (x + cell, y + 40), (255, 255, 255), 1)
+
+        caption = obj.color_name[:3]
+        text_size = cv2.getTextSize(caption, font, 0.5, 2)[0]
+        cv2.putText(
+            panel,
+            caption,
+            (x + max(2, (cell - text_size[0]) // 2), y + 27),
+            font,
+            0.5,
+            _readable_text_color(color),
+            2,
+        )
+
+        if is_selecting and obj.handle == selected_handle:
+            cv2.rectangle(panel, (x - 3, y - 3), (x + cell + 3, y + 43), (180, 180, 180), 2)
+
+        if obj.handle == chosen_handle:
+            thickness = 3 if is_confirming else 2
+            offset = 4 if is_confirming else 3
+            cv2.rectangle(
+                panel,
+                (x - offset, y - offset),
+                (x + cell + offset, y + 40 + offset),
+                (0, 255, 255),
+                thickness,
+            )
+
+
+def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
+            dest_handle=None, undo_available=False, status_message=""):
+    """Render the operator panel from the live registry."""
+    panel = np.zeros((PANEL_HEIGHT, PANEL_WIDTH, 3), dtype=np.uint8)
+
     cv2.putText(panel, f"STATE: {state}", (10, 25), font, 0.65, (0, 255, 255), 2)
     cv2.putText(panel, f"GESTURE: {gesture}", (350, 25), font, 0.65, (0, 255, 0), 2)
-    source_text = "-" if source_idx is None else f"Block {source_idx + 1}"
-    destination_text = "-" if dest_idx is None else f"Spot {dest_idx + 1}"
+
+    source = registry.by_handle(source_handle) if source_handle is not None else None
+    destination = registry.by_handle(dest_handle) if dest_handle is not None else None
+
+    source_text = source.label if source is not None else "-"
+    destination_text = destination.label if destination is not None else "-"
     undo_text = "available" if undo_available else "unavailable"
+
     cv2.putText(panel, f"SOURCE: {source_text}", (10, 50), font, 0.45, (220, 220, 220), 1)
-    cv2.putText(panel, f"DEST: {destination_text}", (190, 50), font, 0.45, (220, 220, 220), 1)
-    cv2.putText(panel, f"UNDO: {undo_text}", (390, 50), font, 0.45,
+    cv2.putText(panel, f"DEST: {destination_text}", (210, 50), font, 0.45, (220, 220, 220), 1)
+    cv2.putText(panel, f"UNDO: {undo_text}", (420, 50), font, 0.45,
                 (0, 255, 0) if undo_available else (140, 140, 140), 1)
 
-    # Instructions
-    if state == "RUNNING":
-        cv2.putText(panel, "Robot ready",
-                    (10, 75), font, 0.45, (0, 255, 0), 1)
-    elif state == "PAUSED":
-        cv2.putText(panel, "PAUSED - press P or open palm to resume",
-                    (10, 75), font, 0.45, (0, 200, 255), 1)
-    elif state == "EMERGENCY_STOPPED":
-        cv2.putText(panel, "EMERGENCY STOP - press E to re-enable",
-                    (10, 75), font, 0.45, (0, 0, 255), 1)
-    elif state == "SELECT_SOURCE":
-        cv2.putText(panel, "Point L/R to select block, PINCH to choose",
-                    (10, 75), font, 0.45, (200, 200, 200), 1)
-    elif state == "CONFIRM_SOURCE":
-        cv2.putText(panel, "THUMBS UP to confirm | THUMB LEFT to cancel",
-                    (10, 75), font, 0.45, (0, 255, 255), 1)
-    elif state == "SELECT_DEST":
-        cv2.putText(panel, "Point L/R to select spot, PINCH to choose",
-                    (10, 75), font, 0.45, (200, 200, 200), 1)
-    elif state == "CONFIRM_DEST":
-        cv2.putText(panel, "THUMBS UP to confirm | THUMB LEFT to cancel",
-                    (10, 75), font, 0.45, (0, 255, 255), 1)
-    elif state == "EXECUTING":
-        cv2.putText(panel, "Robot is moving...",
-                    (10, 75), font, 0.45, (0, 200, 255), 1)
+    instruction, instruction_color = INSTRUCTIONS.get(state, (state, (200, 200, 200)))
+    cv2.putText(panel, instruction, (10, 75), font, 0.45, instruction_color, 1)
 
-    # --- Row 1: Source Blocks ---
-    cv2.putText(panel, "BLOCKS:", (10, 110), font, 0.5, (180, 180, 180), 1)
-    for i in range(5):
-        x = 110 + i * 105
-        y = 90
+    cv2.putText(panel, "TUBES:", (10, 110), font, 0.5, (180, 180, 180), 1)
+    _draw_row(
+        panel,
+        registry.sources,
+        90,
+        selected_handle,
+        source_handle,
+        state == "SELECT_SOURCE",
+        state == "CONFIRM_SOURCE",
+        "done",
+    )
 
-        color = BLOCK_COLORS_BGR[i]
-        thickness = -1  # filled
-
-        if block_placed[i]:
-            cv2.rectangle(panel, (x, y), (x + 80, y + 40), (60, 60, 60), 1)
-            cv2.putText(panel, "done", (x + 20, y + 27), font, 0.4, (80, 80, 80), 1)
-            continue
-
-        cv2.rectangle(panel, (x, y), (x + 80, y + 40), color, thickness)
-        cv2.putText(panel, BLOCK_NAMES[i], (x + 15, y + 27), font, 0.5, (255, 255, 255), 2)
-
-        # Selection highlight (grey border visible over the white focus border)
-        if state == "SELECT_SOURCE" and i == selected_idx:
-            cv2.rectangle(panel, (x - 3, y - 3), (x + 83, y + 43), (180, 180, 180), 2)
-
-        # Confirmed source marker (bright yellow thick border)
-        if source_idx == i and state in ("CONFIRM_SOURCE",):
-            cv2.rectangle(panel, (x - 4, y - 4), (x + 84, y + 44), (0, 255, 255), 3)
-        elif source_idx == i:
-            cv2.rectangle(panel, (x - 3, y - 3), (x + 83, y + 43), (0, 255, 255), 2)
-
-    # --- Row 2: Destination Spots ---
     cv2.putText(panel, "SPOTS:", (10, 175), font, 0.5, (180, 180, 180), 1)
-    for i in range(5):
-        x = 110 + i * 105
-        y = 155
-        spot_color = DESTINATION_SPOT_COLORS_BGR[i]
+    _draw_row(
+        panel,
+        registry.destinations,
+        155,
+        selected_handle,
+        dest_handle,
+        state == "SELECT_DEST",
+        state == "CONFIRM_DEST",
+        "used",
+    )
 
-        if dest_placed[i]:
-            cv2.rectangle(panel, (x, y), (x + 80, y + 40), (60, 60, 60), 1)
-            cv2.putText(panel, "used", (x + 20, y + 27), font, 0.4, (80, 80, 80), 1)
-            continue
+    if status_message:
+        color = (0, 255, 255) if "FAIL" not in status_message.upper() else (0, 0, 255)
+        text_size = cv2.getTextSize(status_message, font, 0.55, 2)[0]
+        cv2.putText(panel, status_message,
+                    (PANEL_WIDTH - text_size[0] - 12, 205), font, 0.55, color, 2)
 
-        cv2.rectangle(panel, (x, y), (x + 80, y + 40), spot_color, -1)
-        cv2.rectangle(panel, (x, y), (x + 80, y + 40), (255, 255, 255), 2)
-        cv2.putText(panel, f"Spot {i+1}", (x + 8, y + 27), font, 0.4, (255, 255, 255), 1)
-
-        # Selection highlight (grey border visible over the white focus border)
-        if state == "SELECT_DEST" and i == selected_idx:
-            cv2.rectangle(panel, (x - 3, y - 3), (x + 83, y + 43), (180, 180, 180), 2)
-
-        # Confirmed dest marker (bright yellow thick border)
-        if dest_idx == i and state in ("CONFIRM_DEST",):
-            cv2.rectangle(panel, (x - 4, y - 4), (x + 84, y + 44), (0, 255, 255), 3)
-        elif dest_idx == i:
-            cv2.rectangle(panel, (x - 3, y - 3), (x + 83, y + 43), (0, 255, 255), 2)
-
-    # Navigation hints
     cv2.putText(panel, "Pinch=Select | ThumbsUp=Confirm | ThumbLeft=Cancel | U=Undo | Q=Quit",
-                (15, 225), font, 0.36, (120, 120, 120), 1)
+                (15, 228), font, 0.36, (120, 120, 120), 1)
 
     return panel
