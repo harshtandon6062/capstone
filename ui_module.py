@@ -83,12 +83,23 @@ def _draw_row(panel, objects, y, selected_handle, chosen_handle, is_selecting,
 
 
 def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
-            dest_handle=None, undo_available=False, status_message=""):
+            dest_handle=None, undo_available=False, status_message="",
+            hold_progress=0.0):
     """Render the operator panel from the live registry."""
     panel = np.zeros((PANEL_HEIGHT, PANEL_WIDTH, 3), dtype=np.uint8)
 
     cv2.putText(panel, f"STATE: {state}", (10, 25), font, 0.65, (0, 255, 255), 2)
     cv2.putText(panel, f"GESTURE: {gesture}", (350, 25), font, 0.65, (0, 255, 0), 2)
+
+    # A charging bar under the gesture name. Without it a hold that has not yet
+    # completed is indistinguishable from the system ignoring you.
+    if gesture not in ("unknown", "", None) and 0.0 < hold_progress < 1.0:
+        bar_left, bar_top, bar_width = 350, 31, 200
+        cv2.rectangle(panel, (bar_left, bar_top), (bar_left + bar_width, bar_top + 5),
+                      (60, 60, 60), -1)
+        cv2.rectangle(panel, (bar_left, bar_top),
+                      (bar_left + int(bar_width * hold_progress), bar_top + 5),
+                      (0, 220, 255), -1)
 
     source = registry.by_handle(source_handle) if source_handle is not None else None
     destination = registry.by_handle(dest_handle) if dest_handle is not None else None

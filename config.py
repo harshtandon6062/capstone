@@ -53,10 +53,26 @@ OBJECT_Z = 0.65
 DESTINATION_X = 0.95
 DESTINATION_Z_OFFSET = -0.025
 
-# Gesture timing configuration (seconds)
-GESTURE_COOLDOWN = 1.0
+# Gesture timing configuration (seconds).
+#
+# Hold and cooldown are deliberately proportional to how costly the action is to
+# get wrong. Navigating between tubes is free to undo, so it should feel
+# immediate. Committing a destination starts the robot moving, so it stays
+# slow enough to be a decision.
+NAVIGATION_HOLD_DURATION = 0.25
+NAVIGATION_COOLDOWN = 0.30
+GESTURE_HOLD_DURATION = 0.9
+GESTURE_COOLDOWN = 0.8
 UNDO_GESTURE_COOLDOWN = 10.0
-GESTURE_HOLD_DURATION = 1.0
+
+# The dynamic (LSTM) model costs ~80 ms per call and on the pick-and-place
+# screen its output is only displayed - the state machine runs on static
+# gestures. Running it every frame halved the frame rate for a label.
+DYNAMIC_PREDICT_EVERY = 5
+
+# Frames of agreement required before a static gesture is reported. This is
+# pure latency, so keep it just long enough to smooth detector flicker.
+GESTURE_STABILISER_WINDOW = 3
 
 # How long a transient panel message stays on screen (seconds). Without this a
 # message drawn on one frame vanishes in about 30 ms and is never read.

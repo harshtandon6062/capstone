@@ -8,10 +8,19 @@ import numpy as np
 from hand_landmark_provider import HandLandmarkProvider
 
 
+try:
+    from config import GESTURE_STABILISER_WINDOW
+except ImportError:  # keep this module importable on its own
+    GESTURE_STABILISER_WINDOW = 3
+
+
 class GestureDetector:
 
-    def __init__(self):
-        self.history = deque(maxlen=6)
+    def __init__(self, stabiliser_window=None):
+        # Every frame in this window is latency the operator feels before a
+        # gesture registers at all. At 6 fps a window of 6 was a full second of
+        # dead time on its own, so it is kept just long enough to smooth flicker.
+        self.history = deque(maxlen=stabiliser_window or GESTURE_STABILISER_WINDOW)
         self.pinch_threshold = 0.045
         self.direction_threshold = 1.25
 

@@ -38,6 +38,9 @@ from config import (
     DESTINATION_Z_OFFSET,
     GESTURE_COOLDOWN,
     GESTURE_HOLD_DURATION,
+    NAVIGATION_COOLDOWN,
+    NAVIGATION_HOLD_DURATION,
+    DYNAMIC_PREDICT_EVERY,
     GRAB_Z,
     GRIPPER_BASE_ORIENTATION,
     GRIPPER_BASE_POSITION,
@@ -401,6 +404,8 @@ def run_pick_and_place():
     current_dynamic_gesture = "none"
     status_message = ""
     status_message_time = 0.0
+    frame_index = 0
+    hold_progress = 0.0
 
     def set_status(message):
         """Show a panel message long enough for a human to actually read it."""
@@ -477,7 +482,13 @@ def run_pick_and_place():
         if len(sequence_data) > dynamic_sequence_length:
             sequence_data.pop(0)
 
-        if len(sequence_data) == dynamic_sequence_length:
+        # The LSTM costs ~80 ms, which was half the frame budget, and on this
+        # screen its result is only displayed - the state machine below runs on
+        # static gestures. Sampling it periodically keeps the label alive without
+        # paying that cost on every frame.
+        frame_index += 1
+        if (len(sequence_data) == dynamic_sequence_length
+                and frame_index % DYNAMIC_PREDICT_EVERY == 0):
             input_data = np.expand_dims(np.array(sequence_data), axis=0)
             preds = dynamic_model.predict(input_data, verbose=0)[0]
             idx = np.argmax(preds)
@@ -498,10 +509,18 @@ def run_pick_and_place():
             held_gesture = gesture
             hold_start_time = now
 
+        # Navigating is free to undo, so it fires quickly. Confirming a
+        # destination starts the robot, so it stays a deliberate hold.
+        committing = system_state == "CONFIRM_DEST" and gesture == "thumbs_up"
+        required_hold = gesture_hold_duration if committing else NAVIGATION_HOLD_DURATION
+        required_cooldown = gesture_cooldown if committing else NAVIGATION_COOLDOWN
+
+        hold_elapsed = 0.0 if hold_start_time is None else now - hold_start_time
+        hold_progress = min(1.0, hold_elapsed / required_hold) if required_hold else 1.0
         gesture_held = (
             held_gesture == gesture
             and hold_start_time is not None
-            and now - hold_start_time >= gesture_hold_duration
+            and hold_elapsed >= required_hold
         )
 
         safety.handle_gesture(gesture, previous_safety_gesture)
@@ -524,7 +543,7 @@ def run_pick_and_place():
         # ── Gesture Navigation ──
         if (safety.state is SafetyState.RUNNING
             and gesture_held
-            and now - last_gesture_time > gesture_cooldown
+            and now - last_gesture_time > required_cooldown
             and system_state not in ("EXECUTING",)):
             if gesture == "point_down":
                 if command_invoker.can_undo:
@@ -653,6 +672,7 @@ def run_pick_and_place():
             dest_handle,
             command_invoker.can_undo,
             status_message,
+            hold_progress,
         )
         if camera_connected:
             cv2.imshow("Webcam", frame)
