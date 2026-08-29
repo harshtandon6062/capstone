@@ -49,13 +49,21 @@ class GestureDetector:
         return math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)
 
     def finger_direction(self, mcp, tip):
+        """Name the direction from the operator's point of view.
+
+        The frame is mirrored once before detection, so increasing image x is
+        the operator's right. The old mapping treated it as their left, which
+        was correct only while the frame was being flipped a second time inside
+        this module; that second flip is gone, so left and right came out
+        swapped.
+        """
         dx = tip.x - mcp.x
         dy = tip.y - mcp.y
 
         if abs(dx) > abs(dy) * self.direction_threshold:
             if dx > 0:
-                return "point_left"
-            return "point_right"
+                return "point_right"
+            return "point_left"
         if dy < 0:
             return "point_up"
         return "point_down"
@@ -67,10 +75,11 @@ class GestureDetector:
         dx = tip.x - wrist.x
         dy = tip.y - wrist.y
 
+        # Same mirrored-frame convention as finger_direction.
         if abs(dx) > abs(dy) * self.direction_threshold:
             if dx > 0:
-                return "thumb_left"
-            return "thumb_right"
+                return "thumb_right"
+            return "thumb_left"
         if dy < 0:
             return "thumbs_up"
         return "thumbs_down"
