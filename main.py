@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from ui_module import draw_ui
 from safety_controller import EmergencyStopError, SafetyController, SafetyState
+from robot_controller import RobotController
+from commands import CommandInvoker, CommandMapper
 from config import (
     CUBE_COLORS_RGBA,
     CUBE_HALF_EXTENTS,
@@ -29,6 +31,8 @@ from config import (
     DESTINATION_SPOT_HALF_EXTENTS,
     DESTINATION_X,
     DESTINATION_Z_OFFSET,
+    GESTURE_COOLDOWN,
+    GESTURE_HOLD_DURATION,
     GRAB_Z,
     GRIPPER_BASE_ORIENTATION,
     GRIPPER_BASE_POSITION,
@@ -42,6 +46,7 @@ from config import (
     OBJECT_Y_STEP,
     OBJECT_Z,
     ROBOT_BASE_ORIENTATION,
+    UNDO_GESTURE_COOLDOWN,
     ROBOT_BASE_POSITION,
     TABLE_BASE_ORIENTATION,
     TABLE_BASE_POSITION,
@@ -303,61 +308,19 @@ def run_pick_and_place():
     for _ in range(480):
         p.stepSimulation()
 
-    # ──────────────────────────────────────────────
-    # ROBOT CONTROL FUNCTIONS (closures over local state)
-    # ──────────────────────────────────────────────
-    TARGET_ORN = p.getQuaternionFromEuler(TARGET_EULER)
+    # RobotController is the only PyBullet-facing object used by commands.
     safety_poll = lambda: None
-
-    def reset_robot():
-        safety.require_motion()
-        for j in range(p.getNumJoints(kuka_id)):
-            p.resetJointState(kuka_id, j, init_joint_pos[j])
-            p.setJointMotorControl2(kuka_id, j, p.POSITION_CONTROL, init_joint_pos[j], 0)
-        p.resetBasePositionAndOrientation(gripper_id, [0.923103, -0.2, 1.250036],
-                                           [-0.0, 0.964531, -0.000002, -0.263970])
-        for j in range(p.getNumJoints(gripper_id)):
-            p.resetJointState(gripper_id, j, init_gripper_pos[j])
-            p.setJointMotorControl2(gripper_id, j, p.POSITION_CONTROL, init_gripper_pos[j], 0)
-        for _ in range(120):
-            if not safety.step_simulation(safety_poll, raise_on_stop=True):
-                return False
-        return True
-
-    def move_to(target_pos, gripper_open, steps=150):
-        if not safety.wait_until_running(safety_poll):
-            return False
-        gv = 0 if gripper_open else 1
-        jp = p.calculateInverseKinematics(kuka_id, 6, target_pos, TARGET_ORN)
-        for j in range(num_kuka_joints):
-            p.setJointMotorControl2(kuka_id, j, p.POSITION_CONTROL, jp[j])
-        p.setJointMotorControl2(gripper_id, 4, p.POSITION_CONTROL, gv * 0.05, force=100)
-        p.setJointMotorControl2(gripper_id, 6, p.POSITION_CONTROL, gv * 0.05, force=100)
-        for _ in range(steps):
-            if not safety.step_simulation(safety_poll, raise_on_stop=True):
-                return False
-            time.sleep(1 / 480)
-        return True
-
-    def do_pick_and_place(src, dst, cube_id):
-        if not move_to([src[0], src[1], HOVER_Z], True, 200):
-            return False
-        if not move_to([src[0], src[1], GRAB_Z], False, 150):
-            return False
-        if not move_to([src[0], src[1], LIFT_Z], False, 200):
-            return False
-        nw = max(5, int(abs(dst[1] - src[1]) / 0.05))
-        for w in range(nw + 1):
-            t = w / nw
-            if not move_to([src[0] + t*(dst[0]-src[0]), src[1] + t*(dst[1]-src[1]), LIFT_Z], False, 80):
-                return False
-        if not move_to([dst[0], dst[1], GRAB_Z], False, 200):
-            return False
-        if not move_to([dst[0], dst[1], GRAB_Z], True, 100):
-            return False
-        if not move_to([dst[0], dst[1], HOVER_Z], True, 100):
-            return False
-        return reset_robot()
+    robot_controller = RobotController(
+        p,
+        kuka_id,
+        gripper_id,
+        safety,
+        init_joint_pos,
+        init_gripper_pos,
+        safety_poll,
+    )
+    command_mapper = CommandMapper(robot_controller)
+    command_invoker = CommandInvoker()
 
     # ──────────────────────────────────────────────
     # STATE MACHINE + MAIN LOOP
@@ -367,8 +330,13 @@ def run_pick_and_place():
     source_idx = None
     dest_idx = None
     block_placed = [False] * 5
+    dest_placed = [False] * 5
     last_gesture_time = 0
-    gesture_cooldown = 0.4
+    gesture_cooldown = GESTURE_COOLDOWN
+    undo_gesture_cooldown = UNDO_GESTURE_COOLDOWN
+    gesture_hold_duration = GESTURE_HOLD_DURATION
+    held_gesture = None
+    hold_start_time = None
     blue_glove_mode = True
 
     cv2.namedWindow("Pick and Place", cv2.WINDOW_NORMAL)
@@ -379,11 +347,13 @@ def run_pick_and_place():
         safety.handle_key(key)
 
     safety_poll = poll_safety_input
+    robot_controller.set_safety_poll(safety_poll)
     previous_safety_gesture = None
     sequence_data = []
     dynamic_sequence_length = 20
     dynamic_confidence = 0.0
     current_dynamic_gesture = "none"
+    status_message = ""
 
     print("[START] application loop", flush=True)
     print("=" * 50)
@@ -457,26 +427,82 @@ def run_pick_and_place():
         if command is not None:
             print(f"Gesture command -> {command['source']}:{command['command']} ({command['confidence']:.2f})")
 
+        if gesture == "unknown":
+            held_gesture = None
+            hold_start_time = None
+        elif held_gesture != gesture:
+            held_gesture = gesture
+            hold_start_time = now
+
+        gesture_held = (
+            held_gesture == gesture
+            and hold_start_time is not None
+            and now - hold_start_time >= gesture_hold_duration
+        )
+
         safety.handle_gesture(gesture, previous_safety_gesture)
         previous_safety_gesture = gesture
+        status_message = ""
 
         # ── Gesture Navigation ──
         if (safety.state is SafetyState.RUNNING
+            and gesture_held
             and now - last_gesture_time > gesture_cooldown
             and system_state not in ("EXECUTING",)):
+            if gesture == "point_down":
+                if command_invoker.can_undo:
+                    if now - last_gesture_time > undo_gesture_cooldown:
+                        if command_invoker.undo():
+                            print("Last pick-and-place undone via gesture.")
+                            undone_command = command_invoker.last_undone_command
+                            undone_object = undone_command.source_object
+                            if undone_object in cubes:
+                                block_placed[cubes.index(undone_object)] = False
+                            if undone_command.destination in dest_positions:
+                                dest_placed[dest_positions.index(undone_command.destination)] = False
+                            status_message = "UNDO EXECUTED"
+                        else:
+                            status_message = "UNDO FAILED"
+                        last_gesture_time = now
+                else:
+                    # No-op: do not block future gestures or leave the menu stuck.
+                    last_gesture_time = now
+
             if system_state in ("SELECT_SOURCE", "SELECT_DEST"):
                 if gesture == "point_right":
-                    selected_idx = min(selected_idx + 1, 4)
+                    next_idx = selected_idx
+                    step = 1
+                    while True:
+                        next_idx = (next_idx + step) % 5
+                        if system_state == "SELECT_SOURCE":
+                            if not block_placed[next_idx]:
+                                selected_idx = next_idx
+                                break
+                        else:
+                            if not dest_placed[next_idx]:
+                                selected_idx = next_idx
+                                break
                     last_gesture_time = now
                 elif gesture == "point_left":
-                    selected_idx = max(selected_idx - 1, 0)
+                    next_idx = selected_idx
+                    step = -1
+                    for _ in range(5):
+                        next_idx = (next_idx + step) % 5
+                        if system_state == "SELECT_SOURCE":
+                            if not block_placed[next_idx]:
+                                selected_idx = next_idx
+                                break
+                        else:
+                            if not dest_placed[next_idx]:
+                                selected_idx = next_idx
+                                break
                     last_gesture_time = now
                 elif gesture == "pinch":
                     if system_state == "SELECT_SOURCE" and not block_placed[selected_idx]:
                         source_idx = selected_idx
                         system_state = "CONFIRM_SOURCE"
                         print(f"Source highlighted: Block {source_idx + 1} — Thumbs up to confirm, Thumb left to cancel")
-                    elif system_state == "SELECT_DEST":
+                    elif system_state == "SELECT_DEST" and not dest_placed[selected_idx]:
                         dest_idx = selected_idx
                         system_state = "CONFIRM_DEST"
                         print(f"Dest highlighted: Spot {dest_idx + 1} — Thumbs up to confirm, Thumb left to cancel")
@@ -508,16 +534,17 @@ def run_pick_and_place():
         # ── Execute ──
         if system_state == "EXECUTING" and safety.state is SafetyState.RUNNING:
             try:
-                completed = do_pick_and_place(
-                    source_positions[source_idx],
-                    dest_positions[dest_idx],
+                command = command_mapper.pick_and_place(
                     cubes[source_idx],
+                    dest_positions[dest_idx],
                 )
+                completed = command_invoker.execute(command)
             except EmergencyStopError as error:
                 print(error)
                 completed = False
             if completed:
                 block_placed[source_idx] = True
+                dest_placed[dest_idx] = True
             system_state = "SELECT_SOURCE"
             source_idx = None
             dest_idx = None
@@ -527,7 +554,6 @@ def run_pick_and_place():
             safety.step_simulation(safety_poll)
 
         # ── Display ──
-        frame = cv2.resize(frame, (640, 480))
         cv2.putText(frame, f"Gesture: {gesture}", (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         cv2.putText(frame, f"Dynamic: {current_dynamic_gesture} ({dynamic_confidence:.2f})",
@@ -541,13 +567,27 @@ def run_pick_and_place():
             cv2.putText(frame, f"Confirm Spot {dest_idx+1}? Thumbs Up / Thumb Left", (10, 470),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
+        if status_message:
+            color = (0, 255, 255) if status_message == "UNDO EXECUTED" else (0, 0, 255)
+            cv2.putText(frame, status_message, (10, 445),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
         glove_text = "GLOVE: ON" if blue_glove_mode else "GLOVE: OFF"
         cv2.putText(frame, glove_text, (520, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
         display_state = (safety.state_name
                  if safety.state is not SafetyState.RUNNING
                  else system_state)
-        ui = draw_ui(display_state, gesture, selected_idx, source_idx, dest_idx, block_placed)
+        ui = draw_ui(
+            display_state,
+            gesture,
+            selected_idx,
+            source_idx,
+            dest_idx,
+            block_placed,
+            dest_placed,
+            command_invoker.can_undo,
+        )
         if camera_connected:
             cv2.imshow("Webcam", frame)
         cv2.imshow("Pick and Place", ui)
@@ -567,14 +607,29 @@ def run_pick_and_place():
             for i, c in enumerate(cubes):
                 p.resetBasePositionAndOrientation(c, source_positions[i], [0, 0, 0, 1])
                 p.resetBaseVelocity(c, [0, 0, 0], [0, 0, 0])
-            reset_robot()
+            robot_controller.reset_robot()
+            command_invoker.clear_history()
             system_state = "SELECT_SOURCE"
             selected_idx = 0
             source_idx = None
             dest_idx = None
             block_placed = [False] * 5
+            dest_placed = [False] * 5
             for _ in range(240):
                 safety.step_simulation(safety_poll)
+        elif key == ord('u'):
+            if safety.state is SafetyState.EMERGENCY_STOPPED:
+                print("Emergency stop remains active; press E to reset safety first.")
+            elif command_invoker.undo():
+                print("Last pick-and-place undone.")
+                undone_command = command_invoker.last_undone_command
+                undone_object = undone_command.source_object
+                if undone_object in cubes:
+                    block_placed[cubes.index(undone_object)] = False
+                if undone_command.destination in dest_positions:
+                    dest_placed[dest_positions.index(undone_command.destination)] = False
+            else:
+                print("Nothing to undo.")
         elif key == 8:  # backspace = go back (like thumb_left)
             if system_state == "CONFIRM_SOURCE":
                 system_state = "SELECT_SOURCE"
@@ -591,7 +646,7 @@ def run_pick_and_place():
                 if system_state == "SELECT_SOURCE" and not block_placed[selected_idx]:
                     source_idx = selected_idx
                     system_state = "CONFIRM_SOURCE"
-                elif system_state == "SELECT_DEST":
+                elif system_state == "SELECT_DEST" and not dest_placed[selected_idx]:
                     dest_idx = selected_idx
                     system_state = "CONFIRM_DEST"
         elif system_state in ("CONFIRM_SOURCE", "CONFIRM_DEST"):

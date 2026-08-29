@@ -12,6 +12,7 @@ A gesture-controlled robotic simulation that integrates **dynamic gesture recogn
   - **Thumbs Up** — Confirm selection
   - **Thumb Left** — Cancel and re-select
 - **Blue Glove Mode** — Channel swap trick for better hand detection with blue lab gloves.
+- **Safety Controller** — Implements pause/resume and emergency stop behavior in the simulation loop.
 - **Self-Contained** — All models and modules are included in this directory.
 
 ## Gesture → Task Mapping
@@ -63,8 +64,21 @@ python launcher.py
 - **Thumbs Up** or **Enter** → confirm selection
 - **Thumb Left** or **Backspace** → cancel selection
 - **R** → reset simulation
+- **P** → pause / resume motion
+- **X** → emergency stop
+- **E** → clear emergency stop
+- **U** → undo the most recent successful pick-and-place
 - **B** → toggle blue glove mode
 - **Q** → return to launcher
+
+### Timing Configuration
+
+Gesture timing is centralized in [config.py](config.py):
+- `GESTURE_COOLDOWN = 1.0`
+- `UNDO_GESTURE_COOLDOWN = 10.0`
+- `GESTURE_HOLD_DURATION = 1.0`
+
+Adjust these values in one place to tune gesture responsiveness.
 
 ## Architecture
 
@@ -72,9 +86,25 @@ python launcher.py
 Launcher (Dynamic Gesture Recognition)
     │
     ├── Grasp held 3s ──► Pick & Place Module
-    │                        ├── PyBullet (Kuka + WSG50 + Cubes)
-    │                        ├── Static Gesture Control (MediaPipe)
-    │                        └── UI Panel (OpenCV)
+  │                        ├── Gestures / Keyboard
+  │                        │       └── CommandMapper (confirmed destination)
+  │                        ├── CommandInvoker → CommandHistory
+  │                        ├── PickPlaceCommand
+  │                        ├── RobotController
+  │                        │       └── PyBullet (Kuka + WSG50 + Cubes)
+  │                        ├── Static Gesture Control (MediaPipe)
+  │                        └── UI Panel (OpenCV)
     │
     └── Q pressed ──► Exit
 ```
+
+`PickPlaceCommand` stores the source object's position and orientation before
+execution. Undo visibly moves the robot to the current object, closes and
+attaches the WSG50 gripper, carries the object back to its saved pose, releases
+it, and returns the robot home. A failed reverse operation remains undoable and
+does not enter a success state. Undo does not reset the simulation or enter the
+emergency-stop history. Emergency stop remains latched until the explicit `E`
+recovery action is used.
+
+The current PyBullet backend is isolated behind `RobotController`, leaving the
+command API suitable for a future ROS-backed controller.
