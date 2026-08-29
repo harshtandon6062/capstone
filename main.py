@@ -611,8 +611,10 @@ def run_pick_and_place():
             dest_handle = None
             selected_handle = registry.first_available("source")
 
-        if safety.state is not SafetyState.EMERGENCY_STOPPED:
-            safety.step_simulation(safety_poll)
+        # Never block here: the camera and gesture pipeline must keep running
+        # while paused, otherwise the webcam freezes and a gesture-triggered
+        # pause cannot be released by gesture.
+        safety.step_if_running()
 
         # ── Display ──
         cv2.putText(frame, f"Gesture: {gesture}", (10, 40),
@@ -680,7 +682,7 @@ def run_pick_and_place():
             selected_handle = registry.first_available("source")
             set_status("SCENE RESET")
             for _ in range(240):
-                safety.step_simulation(safety_poll)
+                safety.step_if_running()
         elif key == ord('u'):
             if safety.state is SafetyState.EMERGENCY_STOPPED:
                 print("Emergency stop remains active; press E to reset safety first.")

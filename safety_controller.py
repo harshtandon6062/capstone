@@ -17,12 +17,16 @@ class EmergencyStopError(RuntimeError):
 class SafetyController:
     """Owns safety transitions and prevents robot commands while unsafe."""
 
-    def __init__(self, physics, robot_id=None, gripper_id=None, poll_every=4):
+    def __init__(self, physics, robot_id=None, gripper_id=None, poll_every=4,
+                 hold_force=500.0):
         self.physics = physics
         self.robot_id = robot_id
         self.gripper_id = gripper_id
         self.state = SafetyState.RUNNING
         self.quit_requested = False
+        # Torque the joints hold with when stopped. A real arm engages brakes on
+        # an emergency stop; it does not drop whatever it is carrying.
+        self.hold_force = hold_force
         # How often to read operator input while stepping. Every step is
         # wasteful, never is unsafe.
         self.poll_every = max(1, int(poll_every))
@@ -71,8 +75,23 @@ class SafetyController:
     def reset_emergency_stop(self):
         # Re-enable requires an explicit action; normal resume cannot clear it.
         if self.state is SafetyState.EMERGENCY_STOPPED:
+            # Re-assert control at the current pose before releasing the gate, so
+            # the arm holds where it is instead of jumping to a stale target.
+            self._hold_current_pose()
             self.state = SafetyState.RUNNING
         return self.state
+
+    def step_if_running(self):
+        """Advance the simulation only when running. Never blocks.
+
+        The main loop uses this so that a pause keeps the camera and gesture
+        pipeline alive. Blocking there would freeze the webcam and make a
+        gesture-triggered pause impossible to release by gesture.
+        """
+        if self.state is SafetyState.RUNNING:
+            self.physics.stepSimulation()
+            return True
+        return False
 
     def consume_estop_interrupt(self):
         """Return True once after an emergency stop, so callers can re-arm safely."""
@@ -138,21 +157,25 @@ class SafetyController:
         return True
 
     def _stop_robot(self):
-        if self.robot_id is not None:
-            for joint in range(self.physics.getNumJoints(self.robot_id)):
+        """Brake: hold every joint at the angle it is at right now.
+
+        Commanding zero force instead removes all motor torque, which makes the
+        arm go limp and collapse under gravity - and because nothing restores
+        control afterwards, it stays limp once the stop is cleared.
+        """
+        self._hold_current_pose()
+
+    def _hold_current_pose(self):
+        for body in (self.robot_id, self.gripper_id):
+            if body is None:
+                continue
+            for joint in range(self.physics.getNumJoints(body)):
+                angle = self.physics.getJointState(body, joint)[0]
                 self.physics.setJointMotorControl2(
-                    self.robot_id,
+                    body,
                     joint,
-                    self.physics.VELOCITY_CONTROL,
+                    self.physics.POSITION_CONTROL,
+                    targetPosition=angle,
                     targetVelocity=0,
-                    force=0,
-                )
-        if self.gripper_id is not None:
-            for joint in range(self.physics.getNumJoints(self.gripper_id)):
-                self.physics.setJointMotorControl2(
-                    self.gripper_id,
-                    joint,
-                    self.physics.VELOCITY_CONTROL,
-                    targetVelocity=0,
-                    force=0,
+                    force=self.hold_force,
                 )

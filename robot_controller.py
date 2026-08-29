@@ -1,3 +1,4 @@
+import math
 import time
 
 from config import GRAB_Z, HOVER_Z, LIFT_Z, TARGET_EULER
@@ -49,9 +50,25 @@ class RobotController:
                 return False
         return True
 
-    def move_to(self, target_position, gripper_open, steps=150):
+    def move_to(self, target_position, gripper_open, steps=150, precise=False):
+        """Drive the tool to a target.
+
+        With precise=True the move closes the loop: it measures where the tool
+        actually ended up and aims off by the residual until the error is inside
+        tolerance. Inverse kinematics plus a fixed number of position-control
+        steps consistently undershoots by roughly 20 mm, and because the error
+        has a consistent direction it accumulates over repeated pick and undo
+        cycles rather than averaging out.
+        """
         if not self.safety.wait_until_running(self.safety_poll):
             return False
+        if not self._drive_to(target_position, gripper_open, steps):
+            return False
+        if precise:
+            return self._refine(target_position, gripper_open)
+        return True
+
+    def _drive_to(self, target_position, gripper_open, steps):
         gripper_value = 0 if gripper_open else 1
         joint_positions = self.physics.calculateInverseKinematics(
             self.kuka_id, 6, target_position, self.target_orientation
@@ -70,6 +87,49 @@ class RobotController:
             if not self.safety.step_simulation(self.safety_poll, raise_on_stop=True):
                 return False
             time.sleep(1 / 480)
+        return True
+
+    def tool_position(self):
+        return self.physics.getLinkState(self.kuka_id, 6)[4]
+
+    def grasp_position(self):
+        """Where the fingers actually are, which is not where the wrist is."""
+        return self.physics.getLinkState(self.gripper_id, 6)[4]
+
+    def center_gripper_over(self, x, y, gripper_open, attempts=4, steps=70,
+                            tolerance=0.004):
+        """Aim the wrist so the gripper sits over (x, y). Returns the aim used.
+
+        The gripper hangs off the wrist on a constraint, so its centre trails the
+        inverse-kinematics target by a pose-dependent horizontal offset of a few
+        centimetres. Closing without correcting for that means the fingers meet
+        the object off-centre and shove it sideways - about 8 mm per grasp, always
+        in the same direction. That is what makes repeated pick and undo cycles
+        walk an object across the table instead of returning it.
+        """
+        aim_x, aim_y = x, y
+        for _ in range(attempts):
+            grasp = self.grasp_position()
+            error_x, error_y = x - grasp[0], y - grasp[1]
+            if math.hypot(error_x, error_y) <= tolerance:
+                return (aim_x, aim_y)
+            aim_x += error_x
+            aim_y += error_y
+            if not self._drive_to([aim_x, aim_y, HOVER_Z], gripper_open, steps):
+                return None
+        return (aim_x, aim_y)
+
+    def _refine(self, target_position, gripper_open, tolerance=0.004, attempts=3, steps=70):
+        """Aim off by the measured residual until the tool is inside tolerance."""
+        aim = list(target_position)
+        for _ in range(attempts):
+            actual = self.tool_position()
+            error = [t - a for t, a in zip(target_position, actual)]
+            if math.sqrt(sum(e * e for e in error)) <= tolerance:
+                return True
+            aim = [a + e for a, e in zip(aim, error)]
+            if not self._drive_to(aim, gripper_open, steps):
+                return False
         return True
 
     def _attach_object(self, object_id, desired_orientation=None):
@@ -124,7 +184,10 @@ class RobotController:
         try:
             if not self.approach_from_above(source[0], source[1], True, 200):
                 return False
-            if not self.move_to([source[0], source[1], GRAB_Z], False, 150):
+            aim = self.center_gripper_over(source[0], source[1], True)
+            if aim is None:
+                return False
+            if not self.move_to([aim[0], aim[1], GRAB_Z], False, 150):
                 return False
             grasp_constraint = self._attach_object(source_object)
             if not self.move_to([source[0], source[1], LIFT_Z], False, 200):
@@ -139,9 +202,12 @@ class RobotController:
                 ]
                 if not self.move_to(position, False, 80):
                     return False
-            if not self.move_to([destination[0], destination[1], GRAB_Z], False, 200):
+            drop = self.center_gripper_over(destination[0], destination[1], False)
+            if drop is None:
                 return False
-            if not self.move_to([destination[0], destination[1], GRAB_Z], True, 100):
+            if not self.move_to([drop[0], drop[1], GRAB_Z], False, 200):
+                return False
+            if not self.move_to([drop[0], drop[1], GRAB_Z], True, 100):
                 return False
             self._release_object(grasp_constraint)
             grasp_constraint = None
@@ -166,9 +232,10 @@ class RobotController:
                 current_position[0], current_position[1], True, 200
             ):
                 return False
-            if not self.move_to(
-                [current_position[0], current_position[1], GRAB_Z], False, 150
-            ):
+            aim = self.center_gripper_over(current_position[0], current_position[1], True)
+            if aim is None:
+                return False
+            if not self.move_to([aim[0], aim[1], GRAB_Z], False, 150):
                 return False
             grasp_constraint = self._attach_object(source_object, saved_orientation)
             if not self.move_to(
@@ -187,13 +254,12 @@ class RobotController:
                 if not self._move_with_object(source_object, position, 80):
                     return False
 
-            if not self.move_to(
-                [saved_position[0], saved_position[1], GRAB_Z], False, 200
-            ):
+            drop = self.center_gripper_over(saved_position[0], saved_position[1], False)
+            if drop is None:
                 return False
-            if not self.move_to(
-                [saved_position[0], saved_position[1], GRAB_Z], True, 100
-            ):
+            if not self.move_to([drop[0], drop[1], GRAB_Z], False, 200):
+                return False
+            if not self.move_to([drop[0], drop[1], GRAB_Z], True, 100):
                 return False
             self._release_object(grasp_constraint)
             grasp_constraint = None

@@ -127,6 +127,21 @@ by travelling at clearance height and descending vertically, but it is not a
 substitute for a planner. Targets close to the robot's forward axis remain the
 worst case, because IK can flip configuration there and swing the arm wide.
 
+### Known limitation: objects still drift slowly
+
+The gripper hangs off the wrist on a constraint, so its centre trails the
+inverse-kinematics target by a few centimetres and that offset changes with
+pose. Closing without correcting for it made the fingers meet the tube
+off-centre and shove it roughly 8 mm sideways on every grasp, always the same
+direction, so repeated pick and undo cycles walked tubes across the table.
+
+`center_gripper_over()` measures where the fingers actually are and re-aims the
+wrist before closing. Measured over five place-and-undo cycles on one tube, total
+drift fell from 93 mm to 31 mm, and the per-cycle error stopped accumulating in a
+single direction. It is reduced, not eliminated: expect a few millimetres of
+movement per grasp. Press `R` to reset the scene if tubes wander far enough to
+matter.
+
 `PickPlaceCommand` stores the source object's position and orientation before
 execution. Undo visibly moves the robot to the current object, closes and
 attaches the WSG50 gripper, carries the object back to its saved pose, releases

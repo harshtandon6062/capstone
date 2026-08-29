@@ -5,16 +5,23 @@ from safety_controller import EmergencyStopError, SafetyController, SafetyState
 
 class FakePhysics:
     VELOCITY_CONTROL = 0
+    POSITION_CONTROL = 1
 
     def __init__(self):
         self.steps = 0
         self.stopped = []
+        self.commands = []
+        self.angles = {}
 
     def getNumJoints(self, body):
         return 7
 
+    def getJointState(self, body, joint):
+        return (self.angles.get((body, joint), 0.25 * joint), 0.0, None, None)
+
     def setJointMotorControl2(self, body, joint, mode, **kwargs):
         self.stopped.append((body, joint))
+        self.commands.append({"body": body, "joint": joint, "mode": mode, **kwargs})
 
     def stepSimulation(self):
         self.steps += 1
@@ -41,10 +48,62 @@ def test_emergency_stop_is_latched_against_resume():
     assert safety.state is SafetyState.RUNNING
 
 
-def test_emergency_stop_zeroes_both_bodies():
+def test_emergency_stop_brakes_both_bodies():
     physics, safety = make()
     safety.emergency_stop()
     assert {1, 2} <= {body for body, _ in physics.stopped}
+
+
+def test_emergency_stop_holds_position_instead_of_going_limp():
+    """Regression: force=0 removed all torque and the arm collapsed under gravity."""
+    physics, safety = make()
+    safety.emergency_stop()
+
+    assert physics.commands, "stop must command the joints"
+    for command in physics.commands:
+        assert command["mode"] == physics.POSITION_CONTROL, "must brake, not free-spin"
+        assert command["force"] > 0, "zero force lets gravity drop the arm"
+        assert command["targetVelocity"] == 0
+
+
+def test_stop_holds_each_joint_at_its_current_angle():
+    physics, safety = make()
+    physics.angles[(1, 3)] = 1.234
+    safety.emergency_stop()
+
+    held = [c for c in physics.commands if c["body"] == 1 and c["joint"] == 3]
+    assert held and held[0]["targetPosition"] == 1.234
+
+
+def test_clearing_the_stop_reasserts_control():
+    """Regression: reset only flipped the enum, so the arm stayed limp forever."""
+    physics, safety = make()
+    safety.emergency_stop()
+    physics.commands.clear()
+
+    safety.reset_emergency_stop()
+    assert safety.state is SafetyState.RUNNING
+    assert physics.commands, "clearing the stop must re-establish joint control"
+    assert all(c["mode"] == physics.POSITION_CONTROL for c in physics.commands)
+
+
+def test_step_if_running_never_blocks_while_paused():
+    """The main loop uses this so the camera keeps updating while paused."""
+    physics, safety = make()
+    safety.pause()
+    assert safety.step_if_running() is False
+    assert physics.steps == 0
+
+    safety.resume()
+    assert safety.step_if_running() is True
+    assert physics.steps == 1
+
+
+def test_step_if_running_does_nothing_when_stopped():
+    physics, safety = make()
+    safety.emergency_stop()
+    assert safety.step_if_running() is False
+    assert physics.steps == 0
 
 
 def test_operator_input_is_polled_while_running():

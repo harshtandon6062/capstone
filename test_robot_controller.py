@@ -16,6 +16,7 @@ class RecordingPhysics:
         self.targets = []
         self.steps = 0
         self.constraints = []
+        self.tool = [0.0, 0.0, 1.0]
 
     # ── queried during construction ──
     def getQuaternionFromEuler(self, euler):
@@ -24,9 +25,15 @@ class RecordingPhysics:
     def getNumJoints(self, body):
         return 7
 
+    def getJointState(self, body, joint):
+        return (0.0, 0.0, None, None)
+
     # ── motion ──
     def calculateInverseKinematics(self, body, link, position, orientation):
         self.targets.append(list(position))
+        # Pretend the arm tracks perfectly, so closed-loop refinement converges
+        # on the first check instead of chasing a stationary tool.
+        self.tool = list(position)
         return [0.0] * 7
 
     def setJointMotorControl2(self, *args, **kwargs):
@@ -46,7 +53,7 @@ class RecordingPhysics:
         return ([0.75, -0.45, 0.625], [0, 0, 0, 1])
 
     def getLinkState(self, body, link):
-        return (None, None, None, None, [0, 0, 1.0], [0, 0, 0, 1])
+        return (None, None, None, None, list(self.tool), [0, 0, 0, 1])
 
     def invertTransform(self, position, orientation):
         return ([0, 0, 0], [0, 0, 0, 1])
@@ -126,3 +133,31 @@ def test_grasp_constraint_is_released_when_a_move_fails():
     except Exception:
         pass
     assert physics.constraints == [], "an aborted pick must not leave the object attached"
+
+
+def test_precise_move_stops_once_inside_tolerance():
+    """A perfectly tracking arm needs no correction passes."""
+    physics, controller = make_controller()
+    controller.move_to([0.9, -0.2, 0.97], gripper_open=False, steps=10, precise=True)
+    assert len(physics.targets) == 1, "no refinement needed when the tool is on target"
+
+
+def test_precise_move_corrects_a_systematic_undershoot():
+    """Regression: a repeatable undershoot compounded across pick/undo cycles."""
+    physics, controller = make_controller()
+
+    real_ik = physics.calculateInverseKinematics
+    def undershooting_ik(body, link, position, orientation):
+        result = real_ik(body, link, position, orientation)
+        # The arm always stops 20 mm short in x, exactly as measured in sim.
+        physics.tool = [position[0] - 0.02, position[1], position[2]]
+        return result
+    physics.calculateInverseKinematics = undershooting_ik
+
+    target = [0.9, -0.2, 0.97]
+    controller.move_to(target, gripper_open=False, steps=10, precise=True)
+
+    assert len(physics.targets) > 1, "an undershoot must trigger a correction"
+    assert physics.targets[-1][0] > target[0], "correction must aim past the target"
+    final_error = abs(physics.tool[0] - target[0])
+    assert final_error < 0.02, f"residual {final_error:.4f} should beat the raw undershoot"
