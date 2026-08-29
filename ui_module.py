@@ -20,7 +20,8 @@ INSTRUCTIONS = {
     "CONFIRM_SOURCE": ("THUMBS UP to confirm | THUMB LEFT to cancel", (0, 255, 255)),
     "SELECT_DEST": ("Point L/R to select a spot, PINCH to choose", (200, 200, 200)),
     "CONFIRM_DEST": ("THUMBS UP to confirm | THUMB LEFT to cancel", (0, 255, 255)),
-    "EXECUTING": ("Robot is moving...", (0, 200, 255)),
+    "EXECUTING": ("Robot is moving - THUMBS DOWN or X to stop", (0, 200, 255)),
+    "ABORTING": ("Setting the sample down after the stop...", (0, 200, 255)),
 }
 
 

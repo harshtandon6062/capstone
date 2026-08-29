@@ -41,6 +41,7 @@ from config import (
     NAVIGATION_COOLDOWN,
     NAVIGATION_HOLD_DURATION,
     DYNAMIC_PREDICT_EVERY,
+    MOTION_STEPS_PER_FRAME,
     GRAB_Z,
     GRIPPER_BASE_ORIENTATION,
     GRIPPER_BASE_POSITION,
@@ -404,6 +405,14 @@ def run_pick_and_place():
     current_dynamic_gesture = "none"
     status_message = ""
     status_message_time = 0.0
+    # The motion currently in flight, advanced a slice at a time by this loop.
+    active_motion = None
+    active_kind = None
+    motion_source = None
+    motion_dest = None
+    # A motion an emergency stop interrupted. It stays suspended, still gripping,
+    # until the operator clears the stop and the arm can set the sample down.
+    interrupted_motion = None
     frame_index = 0
     hold_progress = 0.0
 
@@ -412,6 +421,15 @@ def run_pick_and_place():
         nonlocal status_message, status_message_time
         status_message = message
         status_message_time = time.time()
+
+    def advance_motion(runner, budget):
+        """Run part of the active motion. Returns (finished, result)."""
+        for _ in range(budget):
+            try:
+                next(runner)
+            except StopIteration as stop:
+                return True, bool(stop.value)
+        return False, None
 
     def selection_kind():
         return "source" if system_state in ("SELECT_SOURCE", "CONFIRM_SOURCE") else "destination"
@@ -530,12 +548,31 @@ def run_pick_and_place():
         # the stop should hand control back to the operator, not silently launch
         # the move that was interrupted.
         if safety.consume_estop_interrupt():
-            if system_state == "EXECUTING":
+            if active_motion is not None:
+                # Hold on to it rather than closing it here: closing runs the
+                # release path, which would drop a tube from mid-air.
+                interrupted_motion = active_motion
+                active_motion = None
+                active_kind = None
+            if system_state in ("EXECUTING", "ABORTING"):
                 set_status("STOPPED - RE-SELECT")
             system_state = "SELECT_SOURCE"
             source_handle = None
             dest_handle = None
             selected_handle = registry.first_available("source")
+
+        # Once the stop is cleared, put down whatever the interrupted motion was
+        # carrying before abandoning it.
+        if (interrupted_motion is not None
+                and active_motion is None
+                and safety.state is SafetyState.RUNNING):
+            if robot_controller.is_holding:
+                active_motion = robot_controller.abort_safely_steps()
+                active_kind = "abort"
+                system_state = "ABORTING"
+            else:
+                interrupted_motion.close()
+                interrupted_motion = None
 
         if status_message and now - status_message_time > STATUS_MESSAGE_DURATION:
             status_message = ""
@@ -543,17 +580,16 @@ def run_pick_and_place():
         # ── Gesture Navigation ──
         if (safety.state is SafetyState.RUNNING
             and gesture_held
+            and active_motion is None
             and now - last_gesture_time > required_cooldown
-            and system_state not in ("EXECUTING",)):
+            and system_state not in ("EXECUTING", "ABORTING")):
             if gesture == "point_down":
                 if command_invoker.can_undo:
                     if now - last_gesture_time > undo_gesture_cooldown:
-                        if command_invoker.undo():
-                            print("Last pick-and-place undone via gesture.")
-                            release_placement(command_invoker.last_undone_command)
-                            set_status("UNDO EXECUTED")
-                        else:
-                            set_status("UNDO FAILED")
+                        active_motion = command_invoker.undo_steps()
+                        active_kind = "undo"
+                        system_state = "EXECUTING"
+                        print("Undoing last pick-and-place via gesture.")
                         last_gesture_time = now
                 else:
                     # No-op: do not block future gestures or leave the menu stuck.
@@ -608,32 +644,61 @@ def run_pick_and_place():
                     last_gesture_time = now
 
         # ── Execute ──
-        if system_state == "EXECUTING" and safety.state is SafetyState.RUNNING:
+        # Motions are driven from here a slice at a time rather than run inside
+        # one blocking call. That is the whole point: the camera keeps being read
+        # and gestures keep being classified while the arm moves, so the stop
+        # gesture is reachable during the motion it exists to interrupt.
+        if (system_state == "EXECUTING"
+                and active_motion is None
+                and dest_handle is not None):
             destination = registry.by_handle(dest_handle)
-            completed = False
-            try:
-                command = command_mapper.pick_and_place(
-                    source_handle,
-                    list(destination.position),
-                )
-                completed = command_invoker.execute(command)
-            except EmergencyStopError as error:
-                print(error)
-            if completed:
-                registry.consume(source_handle)
-                registry.consume(dest_handle)
-                set_status("PLACED")
-            else:
-                set_status("MOVE FAILED")
-            system_state = "SELECT_SOURCE"
-            source_handle = None
-            dest_handle = None
-            selected_handle = registry.first_available("source")
+            command = command_mapper.pick_and_place(
+                source_handle,
+                list(destination.position),
+            )
+            motion_source, motion_dest = source_handle, dest_handle
+            active_motion = command_invoker.execute_steps(command)
+            active_kind = "move"
 
-        # Never block here: the camera and gesture pipeline must keep running
-        # while paused, otherwise the webcam freezes and a gesture-triggered
-        # pause cannot be released by gesture.
-        safety.step_if_running()
+        if active_motion is not None:
+            if safety.state is SafetyState.RUNNING:
+                try:
+                    finished, result = advance_motion(
+                        active_motion, MOTION_STEPS_PER_FRAME
+                    )
+                except EmergencyStopError as error:
+                    print(error)
+                    finished, result = True, False
+                if finished:
+                    if active_kind == "move":
+                        if result:
+                            registry.consume(motion_source)
+                            registry.consume(motion_dest)
+                            set_status("PLACED")
+                        else:
+                            set_status("MOVE FAILED")
+                    elif active_kind == "undo":
+                        if result:
+                            release_placement(command_invoker.last_undone_command)
+                            set_status("UNDO EXECUTED")
+                        else:
+                            set_status("UNDO FAILED")
+                    else:
+                        set_status("SAMPLE SET DOWN")
+                        if interrupted_motion is not None:
+                            interrupted_motion.close()
+                            interrupted_motion = None
+                    active_motion = None
+                    active_kind = None
+                    system_state = "SELECT_SOURCE"
+                    source_handle = None
+                    dest_handle = None
+                    selected_handle = registry.first_available("source")
+        else:
+            # Never block here: the camera and gesture pipeline must keep running
+            # while paused, otherwise the webcam freezes and a gesture-triggered
+            # pause cannot be released by gesture.
+            safety.step_if_running()
 
         # ── Display ──
         cv2.putText(frame, f"Gesture: {gesture}", (10, 40),
@@ -686,6 +751,9 @@ def run_pick_and_place():
             blue_glove_mode = not blue_glove_mode
             print(f"  Blue glove mode: {'ON' if blue_glove_mode else 'OFF'}")
         elif key == ord('r'):
+            if active_motion is not None:
+                print("Robot is moving; stop it before resetting the scene.")
+                continue
             if safety.state is SafetyState.EMERGENCY_STOPPED:
                 print("Emergency stop remains active; press E to reset safety first.")
                 continue
@@ -706,10 +774,13 @@ def run_pick_and_place():
         elif key == ord('u'):
             if safety.state is SafetyState.EMERGENCY_STOPPED:
                 print("Emergency stop remains active; press E to reset safety first.")
-            elif command_invoker.undo():
-                print("Last pick-and-place undone.")
-                release_placement(command_invoker.last_undone_command)
-                set_status("UNDO EXECUTED")
+            elif active_motion is not None:
+                print("Robot is already moving.")
+            elif command_invoker.can_undo:
+                active_motion = command_invoker.undo_steps()
+                active_kind = "undo"
+                system_state = "EXECUTING"
+                print("Undoing last pick-and-place.")
             else:
                 print("Nothing to undo.")
                 set_status("NOTHING TO UNDO")
@@ -720,7 +791,7 @@ def run_pick_and_place():
             elif system_state == "CONFIRM_DEST":
                 system_state = "SELECT_DEST"
                 dest_handle = None
-        elif system_state in ("SELECT_SOURCE", "SELECT_DEST"):
+        elif system_state in ("SELECT_SOURCE", "SELECT_DEST") and active_motion is None:
             kind = selection_kind()
             if key == 83 or key == ord('d'):
                 nxt = registry.next_available(kind, selected_handle, 1)
@@ -743,7 +814,7 @@ def run_pick_and_place():
                     else:
                         dest_handle = selected_handle
                         system_state = "CONFIRM_DEST"
-        elif system_state in ("CONFIRM_SOURCE", "CONFIRM_DEST"):
+        elif system_state in ("CONFIRM_SOURCE", "CONFIRM_DEST") and active_motion is None:
             if key == 13 or key == ord(' '):  # enter = confirm (like thumbs_up)
                 if system_state == "CONFIRM_SOURCE":
                     system_state = "SELECT_DEST"

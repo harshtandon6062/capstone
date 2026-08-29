@@ -74,6 +74,12 @@ DYNAMIC_PREDICT_EVERY = 5
 # pure latency, so keep it just long enough to smooth detector flicker.
 GESTURE_STABILISER_WINDOW = 3
 
+# Simulation steps advanced per camera frame while the robot is moving. The
+# application loop drives a motion a slice at a time instead of blocking inside
+# it, which is what keeps gestures live for the whole of a move. Roughly 16
+# steps at ~30 fps reproduces the pace the blocking version ran at.
+MOTION_STEPS_PER_FRAME = 16
+
 # How long a transient panel message stays on screen (seconds). Without this a
 # message drawn on one frame vanishes in about 30 ms and is never read.
 STATUS_MESSAGE_DURATION = 2.5
