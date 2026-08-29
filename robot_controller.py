@@ -1,7 +1,7 @@
 import math
 import time
 
-from config import GRAB_Z, HOVER_Z, LIFT_Z, TARGET_EULER
+from config import GRAB_Z, GRASP_TOLERANCE, HOVER_Z, LIFT_Z, TARGET_EULER
 from safety_controller import EmergencyStopError
 
 
@@ -93,8 +93,27 @@ class RobotController:
         return self.physics.getLinkState(self.kuka_id, 6)[4]
 
     def grasp_position(self):
-        """Where the fingers actually are, which is not where the wrist is."""
-        return self.physics.getLinkState(self.gripper_id, 6)[4]
+        """Midpoint of the two fingers - the point that actually closes on an object.
+
+        Links 4 and 6 are gripper_left and gripper_right. Using link 6 on its own
+        put the reference on a single finger, about half the finger gap off to
+        one side, so every correction based on it inherited that bias.
+        """
+        left = self.physics.getLinkState(self.gripper_id, 4)[4]
+        right = self.physics.getLinkState(self.gripper_id, 6)[4]
+        return [(a + b) / 2 for a, b in zip(left, right)]
+
+    def grasp_is_valid(self, object_id, tolerance=GRASP_TOLERANCE):
+        """Are the fingers actually around the object before we call this a grasp?
+
+        _attach_object creates a constraint, which succeeds from any distance and
+        silently teleports the object into the gripper. Left unchecked, a move
+        that missed by over a metre - which is what happens on the first pick
+        after the arm has been displaced - still returned True to the operator.
+        """
+        target, _ = self.get_object_state(object_id)
+        grasp = self.grasp_position()
+        return math.hypot(grasp[0] - target[0], grasp[1] - target[1]) <= tolerance
 
     def center_gripper_over(self, x, y, gripper_open, attempts=4, steps=70,
                             tolerance=0.004):
@@ -189,6 +208,8 @@ class RobotController:
                 return False
             if not self.move_to([aim[0], aim[1], GRAB_Z], False, 150):
                 return False
+            if not self.grasp_is_valid(source_object):
+                return False
             grasp_constraint = self._attach_object(source_object)
             if not self.move_to([source[0], source[1], LIFT_Z], False, 200):
                 return False
@@ -236,6 +257,8 @@ class RobotController:
             if aim is None:
                 return False
             if not self.move_to([aim[0], aim[1], GRAB_Z], False, 150):
+                return False
+            if not self.grasp_is_valid(source_object):
                 return False
             grasp_constraint = self._attach_object(source_object, saved_orientation)
             if not self.move_to(

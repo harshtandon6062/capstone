@@ -78,6 +78,12 @@ GESTURE_STABILISER_WINDOW = 3
 # message drawn on one frame vanishes in about 30 ms and is never read.
 STATUS_MESSAGE_DURATION = 2.5
 
+# How far the grasp point may be from an object and still count as a grasp.
+# Attaching is a constraint, so it succeeds from any distance; without this check
+# a move reports success even when the object was never between the fingers.
+# Measured good grasps land under 7 mm, and a tube is 22 mm in radius.
+GRASP_TOLERANCE = 0.03
+
 TARGET_EULER = [0, 1.01 * 3.141592653589793, 0]
 HOVER_Z = 0.97
 GRAB_Z = 0.97

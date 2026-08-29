@@ -161,3 +161,54 @@ def test_precise_move_corrects_a_systematic_undershoot():
     assert physics.targets[-1][0] > target[0], "correction must aim past the target"
     final_error = abs(physics.tool[0] - target[0])
     assert final_error < 0.02, f"residual {final_error:.4f} should beat the raw undershoot"
+
+
+class MissingPhysics(RecordingPhysics):
+    """The arm is nowhere near the object - what a displaced arm looks like."""
+
+    def getLinkState(self, body, link):
+        return (None, None, None, None, [2.0, 2.0, 1.0], [0, 0, 0, 1])
+
+
+def test_grasp_position_is_the_midpoint_of_the_two_fingers():
+    physics = RecordingPhysics()
+    positions = {4: [0.0, 0.0, 1.0], 6: [1.0, 2.0, 3.0]}
+    physics.getLinkState = lambda body, link: (
+        None, None, None, None, positions[link], [0, 0, 0, 1]
+    )
+    controller = RobotController(
+        physics, 1, 2, SafetyController(physics), [0.0] * 7, [0.0] * 8
+    )
+    assert controller.grasp_position() == [0.5, 1.0, 2.0]
+
+
+def test_grasp_is_valid_only_when_the_fingers_are_on_the_object():
+    physics = RecordingPhysics()
+    controller = RobotController(
+        physics, 1, 2, SafetyController(physics), [0.0] * 7, [0.0] * 8
+    )
+    physics.tool = [0.75, -0.45, 0.97]          # object sits at (0.75, -0.45)
+    assert controller.grasp_is_valid(99)
+    physics.tool = [0.95, -0.45, 0.97]          # 200 mm away
+    assert not controller.grasp_is_valid(99)
+
+
+def test_pick_and_place_fails_instead_of_faking_a_grasp_it_did_not_make():
+    """A constraint attaches from any distance, so a miss must be caught first."""
+    physics = MissingPhysics()
+    controller = RobotController(
+        physics, 1, 2, SafetyController(physics), [0.0] * 7, [0.0] * 8
+    )
+    assert controller.pick_and_place(99, [0.95, -0.45, 0.625]) is False
+    assert physics.constraints == []
+
+
+def test_undo_also_refuses_to_fake_a_grasp():
+    physics = MissingPhysics()
+    controller = RobotController(
+        physics, 1, 2, SafetyController(physics), [0.0] * 7, [0.0] * 8
+    )
+    assert controller.reverse_pick_and_place(
+        99, [0.75, -0.45, 0.625], [0, 0, 0, 1]
+    ) is False
+    assert physics.constraints == []
