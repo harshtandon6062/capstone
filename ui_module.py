@@ -10,7 +10,7 @@ import numpy as np
 font = cv2.FONT_HERSHEY_SIMPLEX
 
 PANEL_WIDTH = 640
-PANEL_HEIGHT = 235
+PANEL_HEIGHT = 258
 
 INSTRUCTIONS = {
     "RUNNING": ("Robot ready", (0, 255, 0)),
@@ -129,13 +129,15 @@ def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
         "used",
     )
 
+    # Sits on its own line below the spot row so it never overlaps a swatch.
     if status_message:
-        color = (0, 255, 255) if "FAIL" not in status_message.upper() else (0, 0, 255)
+        upper = status_message.upper()
+        color = (0, 0, 255) if ("FAIL" in upper or "STOPPED" in upper) else (0, 255, 255)
         text_size = cv2.getTextSize(status_message, font, 0.55, 2)[0]
         cv2.putText(panel, status_message,
-                    (PANEL_WIDTH - text_size[0] - 12, 205), font, 0.55, color, 2)
+                    (PANEL_WIDTH - text_size[0] - 12, 222), font, 0.55, color, 2)
 
     cv2.putText(panel, "Pinch=Select | ThumbsUp=Confirm | ThumbLeft=Cancel | U=Undo | Q=Quit",
-                (15, 228), font, 0.36, (120, 120, 120), 1)
+                (15, 250), font, 0.36, (120, 120, 120), 1)
 
     return panel
