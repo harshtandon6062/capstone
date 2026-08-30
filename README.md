@@ -20,8 +20,11 @@ A gesture-controlled robotic simulation that integrates **dynamic gesture recogn
 | Dynamic Gesture | Task | Status |
 |---|---|---|
 | Grasp | Pick & Place | ✅ Ready |
-| Tilt | Pour | 🔜 Coming Soon |
+| Tilt | Pour | ✅ Ready — **cannot be undone** |
 | Wrist Rotation | Mix | 🔜 Coming Soon |
+
+Once a source tube is confirmed, the operator picks an action before choosing a
+target, because a **move** goes to a spot while a **pour** goes into another tube.
 
 ## Files
 
@@ -30,6 +33,10 @@ A gesture-controlled robotic simulation that integrates **dynamic gesture recogn
 | `launcher.py` | Entry point — dynamic gesture recognition + task selection UI |
 | `main.py` | Pick-and-place module (Kuka robot + static gesture control) |
 | `ui_module.py` | UI panel rendering for block/spot selection |
+| `robot_backend.py` | The contract any arm must satisfy — simulated or real |
+| `niryo_backend.py` | Niryo Ned 2 driver (⚠️ untested against hardware) |
+| `object_registry.py` | What is in the workspace, and the single source of colour |
+| `perception.py` | Where workspace contents come from (simulation today, camera later) |
 | `gesture_module.py` | Static gesture detection (MediaPipe hand landmarks) |
 | `gesture_landmark_model.h5` | Trained LSTM model for dynamic gesture classification |
 | `classes.npy` | Gesture class labels |
@@ -152,3 +159,68 @@ recovery action is used.
 
 The current PyBullet backend is isolated behind `RobotController`, leaving the
 command API suitable for a future ROS-backed controller.
+
+
+## Reversibility, and why it is the point
+
+Every action except pouring can be undone. That asymmetry is deliberate, and the
+interface treats the two differently in proportion to what they cost:
+
+| | hold to commit | undo | history |
+|---|---|---|---|
+| Move | 0.9 s | yes | kept |
+| Pour | 2.0 s | refused | cleared |
+
+Pouring clears the undo history rather than just declining its own undo, because
+you cannot undo an earlier move back into a world that no longer exists. The
+operator is told before choosing, not after: the POUR action is outlined in red
+and both the target and confirmation screens say it cannot be undone.
+
+This matters more than it looks. If every action is reversible, a confirmation
+step has nothing to protect and is just friction. One irreversible action is what
+makes the confirmation gate mean something.
+
+## Running on a real Niryo Ned 2
+
+`niryo_backend.py` implements the same interface as the simulated controller, so
+commands, the state machine and the UI do not change. It is **written but not yet
+verified against hardware** — it was built against the pyniryo 1.2.5 API read
+from source, with no arm attached. Before switching an arm on, calibrate
+`WorkspaceTransform`: its `origin`, `robot_origin` and `scale` are guesses, and
+getting them wrong is the difference between reaching a tube and driving into it.
+
+### The safety difference you must know about
+
+In simulation the application drives the physics one step at a time, so an
+emergency stop lands within a frame. **A real Ned 2 cannot do this.** Every
+pyniryo motion call blocks until the arm arrives, and the API has no stop, halt
+or abort command at all — the entire command set was searched. The only software
+way to interrupt a Ned 2 is `set_learning_mode(True)`, which cuts motor torque:
+the arm goes limp and drops what it is carrying, which is exactly the failure
+this project already fixed in simulation. The backend therefore never uses it.
+
+What the software stop actually does on hardware is **refuse to send the next
+waypoint**. Moves are cut into 4 cm segments so that the arm stops soon after
+being asked, but it will finish the segment already in flight.
+
+> On real hardware the physical emergency-stop button is the safety device. The
+> gesture stop is "hold at the next waypoint", not an instantaneous halt, and it
+> should be described that way to anyone operating it.
+
+## Deferred: YOLO perception
+
+`perception.py` already isolates where workspace contents come from, so a
+detector drops in without touching anything above it. It has been left out on
+purpose for now:
+
+- Running it in simulation would be circular — it would detect objects whose
+  exact poses are already known from `getBasePositionAndOrientation`. It would
+  demo well and prove nothing.
+- For five coloured tubes on a white table, HSV thresholding beats a learned
+  detector on both accuracy and speed.
+- The real work is the camera-to-robot calibration, not the detector.
+
+The version worth building runs on the real arm and uses **detection confidence**
+to drive the confirmation policy: a low-confidence detection is exactly when the
+human should be made to confirm. That is the same idea as the pour asymmetry
+above, which is a better reason to use a detector than using one for its own sake.
