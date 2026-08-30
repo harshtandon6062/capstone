@@ -19,7 +19,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 # gesture_module is imported lazily inside run_pick_and_place()
 # because it creates a HandLandmarker at import time and needs CWD set first
 
-from ui_module import PANEL_HEIGHT, PANEL_WIDTH, draw_ui
+from ui_module import (ACCENT, DANGER, OK, PANEL_HEIGHT, PANEL_WIDTH,
+                       TEXT_BRIGHT, draw_ui)
+from ui_text import text as draw_text
 from safety_controller import EmergencyStopError, SafetyController, SafetyState
 from robot_controller import RobotController
 from commands import CommandInvoker, CommandMapper
@@ -422,7 +424,9 @@ def run_pick_and_place(initial_action="move"):
     hold_start_time = None
     blue_glove_mode = True
 
-    cv2.namedWindow("Pick and Place", cv2.WINDOW_NORMAL)
+    # GUI_NORMAL is the same resizable window without the HighGUI toolbar strip,
+    # which is chrome the operator has no use for.
+    cv2.namedWindow("Pick and Place", cv2.WINDOW_GUI_NORMAL)
     cv2.resizeWindow("Pick and Place", PANEL_WIDTH, 480 + PANEL_HEIGHT)
 
     def poll_safety_input():
@@ -909,10 +913,9 @@ def run_pick_and_place(initial_action="move"):
             safety.step_if_running()
 
         # ── Display ──
-        cv2.putText(frame, f"Gesture: {gesture}", (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-        cv2.putText(frame, f"Dynamic: {current_dynamic_gesture} ({dynamic_confidence:.2f})",
-                (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        draw_text(frame, f"Gesture: {gesture}", (10, 40), 21, ACCENT, bold=True)
+        draw_text(frame, f"Dynamic: {current_dynamic_gesture} ({dynamic_confidence:.2f})",
+                  (10, 68), 12, TEXT_BRIGHT)
 
         # Show confirm hint, naming the object rather than an index
         pending = None
@@ -921,17 +924,15 @@ def run_pick_and_place(initial_action="move"):
         elif system_state == "CONFIRM_DEST":
             pending = registry.by_handle(dest_handle)
         if pending is not None:
-            cv2.putText(frame, f"Confirm {pending.label}? Thumbs Up / Thumb Left", (10, 470),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+            draw_text(frame, f"Confirm {pending.label}? Thumbs Up / Thumb Left",
+                      (10, 470), 13, ACCENT, bold=True)
 
         if status_message:
-            color = (0, 0, 255) if "FAIL" in status_message or "STOPPED" in status_message else (0, 255, 255)
-            cv2.putText(frame, status_message, (10, 445),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            color = DANGER if "FAIL" in status_message or "STOPPED" in status_message else ACCENT
+            draw_text(frame, status_message, (10, 445), 14, color, bold=True)
 
         glove_text = "GLOVE: ON" if blue_glove_mode else "GLOVE: OFF"
-        cv2.putText(frame, glove_text, (520, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+        draw_text(frame, glove_text, (520, 30), 12, OK if blue_glove_mode else TEXT_BRIGHT)
         display_state = (safety.state_name
                  if safety.state is not SafetyState.RUNNING
                  else system_state)

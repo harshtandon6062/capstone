@@ -1,0 +1,15 @@
+# Runtime dependencies. Versions are the ones this was developed and
+# measured against, not lower bounds.
+numpy==2.4.3
+opencv-python==4.13.0.92
+mediapipe==0.10.33
+tensorflow_cpu==2.21.0
+keras==3.14.0
+pybullet==3.2.7
+Pillow==10.4.0
+
+# Only needed to drive the physical Ned 2; the simulation runs without it.
+pyniryo==1.2.5
+
+# Test only
+pytest
