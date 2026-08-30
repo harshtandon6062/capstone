@@ -10,9 +10,8 @@ import pytest
 
 from config import GRAB_Z
 from commands import CommandInvoker, PickPlaceCommand
-from robot_controller import RobotController
-from safety_controller import EmergencyStopError, SafetyController
-from test_robot_controller import RecordingPhysics, make_controller
+from safety_controller import EmergencyStopError
+from test_robot_controller import make_controller
 
 
 def drive_until_holding(controller, runner, limit=5000):

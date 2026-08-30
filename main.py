@@ -9,7 +9,6 @@ import pybullet as p
 import pybullet_data
 import cv2
 import numpy as np
-import math
 import sys
 import os
 import time
@@ -31,11 +30,8 @@ from config import (
     DESTINATION_SPOT_COLOR_NAMES,
     STATUS_MESSAGE_DURATION,
     CUBE_COLORS_RGBA,
-    CUBE_HALF_EXTENTS,
     DESTINATION_SPOT_COLORS_RGBA,
-    DESTINATION_SPOT_HALF_EXTENTS,
     DESTINATION_X,
-    DESTINATION_Z_OFFSET,
     GESTURE_COOLDOWN,
     GESTURE_HOLD_DURATION,
     NAVIGATION_COOLDOWN,
@@ -44,13 +40,10 @@ from config import (
     MOTION_STEPS_PER_FRAME,
     ACTIONS,
     IRREVERSIBLE_HOLD_DURATION,
-    GRAB_Z,
     GRIPPER_BASE_ORIENTATION,
     GRIPPER_BASE_POSITION,
-    HOVER_Z,
     INITIAL_GRIPPER_JOINT_POSITIONS,
     INITIAL_KUKA_JOINT_POSITIONS,
-    LIFT_Z,
     OBJECT_COUNT,
     OBJECT_X,
     OBJECT_Y_START,
@@ -68,7 +61,6 @@ from config import (
     TEST_TUBE_RADIUS,
     TEST_TUBE_RIM_RADIUS,
     TEST_TUBE_RIM_THICKNESS,
-    TARGET_EULER,
 )
 
 
@@ -268,7 +260,7 @@ def run_pick_and_place():
     p.setGravity(0, 0, -10)
     p.setRealTimeSimulation(0)
 
-    plane_id = p.loadURDF("plane.urdf")
+    p.loadURDF("plane.urdf")
     table_id = p.loadURDF(
         "table/table.urdf",
         basePosition=TABLE_BASE_POSITION,
@@ -313,8 +305,6 @@ def run_pick_and_place():
     for j in range(p.getNumJoints(gripper_id)):
         p.resetJointState(gripper_id, j, init_gripper_pos[j])
         p.setJointMotorControl2(gripper_id, j, p.POSITION_CONTROL, init_gripper_pos[j], 0)
-
-    num_kuka_joints = p.getNumJoints(kuka_id)
 
     print("[START] scene", flush=True)
     # The perception source is what the rest of the application asks about the

@@ -29,7 +29,7 @@ emergency-stop button remains the actual safety device. The panel should say so.
 
 import math
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 DEFAULT_IP = "169.254.200.200"
 

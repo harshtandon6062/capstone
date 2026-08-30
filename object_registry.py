@@ -8,7 +8,7 @@ disagree.
 Nothing here knows about PyBullet or OpenCV.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 def rgba_to_bgr(rgba):
@@ -172,10 +172,10 @@ class ObjectRegistry:
 
         target.color_rgba = mix_colors(source.color_rgba, target.color_rgba)
         target.color_name = "MIXED"
-        target.label = f"Mixed tube"
+        target.label = "Mixed tube"
         source.color_rgba = list(EMPTY_LIQUID_RGBA)
         source.color_name = "EMPTY"
-        source.label = f"Empty tube"
+        source.label = "Empty tube"
         source.consumed = True
         source.consumed_caption = "empty"
         return source, target
