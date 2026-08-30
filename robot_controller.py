@@ -8,8 +8,12 @@ from config import (
     HOVER_Z,
     LIFT_Z,
     POUR_CLEARANCE,
+    POUR_AIM_LIMIT,
     POUR_HOLD_STEPS,
+    POUR_TILT_STAGES,
     POUR_SWING,
+    POUR_TILT_MAX_FRACTION,
+    POUR_WRIST_FLOOR,
     POUR_TILT_RADIANS,
     POUR_Z,
     ROBOT_BASE_POSITION,
@@ -199,40 +203,82 @@ class RobotController:
             ]
         )
 
-    def _tilt_in_place_steps(self, position, target_y, stages=5, steps=60):
-        """Roll the wrist over gradually, without moving it.
+    def _tilt_in_place_steps(self, position, target_y, mouth_target,
+                             stages=POUR_TILT_STAGES, steps=50):
+        """Roll the wrist over, stopping while the pour is still reachable safely.
 
-        Commanding the full pour orientation in one move makes inverse kinematics
-        pick a noticeably different arm configuration, and position control drives
-        straight through the gap between the two - which dips the tool low enough
-        to clip the tube it is about to pour into.
+        Two separate reasons this is done in stages and by measurement.
+
+        Commanding the full roll in one move makes inverse kinematics pick a
+        different arm configuration and position control drives straight through
+        the gap, dipping low enough to clip the tube being poured into.
+
+        And rolling swings the tube up and over rather than tipping it down, so
+        the steeper the tip, the lower the wrist must go to keep the mouth over a
+        tube on the table. Past a point that means putting the wrist at bench
+        height, where the arm sweeps everything off the table. So after each
+        stage this works out where the wrist would have to be, and stops at the
+        last angle that keeps it above POUR_WRIST_FLOOR.
+
+        Returns the fraction of the nominal roll actually used, or None.
         """
+        best = None
         for stage in range(1, stages + 1):
-            orientation = self.pour_orientation_for(target_y, stage / stages)
+            fraction = POUR_TILT_MAX_FRACTION * stage / stages
+            orientation = self.pour_orientation_for(target_y, fraction)
             if not (yield from self._drive_to_steps(position, False, steps, orientation)):
-                return False
-        return True
+                return None
 
-    def _untilt_in_place_steps(self, position, target_y, stages=5, steps=60):
+            mouth = self.held_object_tip()
+            if mouth is None:
+                return None
+            wrist = self.tool_position()
+            # Where the wrist would have to be for this tip to reach the target.
+            needed_z = mouth_target[2] - (mouth[2] - wrist[2])
+            if needed_z < POUR_WRIST_FLOOR:
+                break
+            best = fraction
+
+        if best is None:
+            return None
+        if best != fraction:
+            # Wind back to the last angle that was still reachable.
+            if not (yield from self._drive_to_steps(
+                position, False, steps, self.pour_orientation_for(target_y, best)
+            )):
+                return None
+        return best
+
+    def _untilt_in_place_steps(self, position, target_y, stages=5, steps=60,
+                               from_fraction=None):
         """The reverse of _tilt_in_place_steps, ending upright."""
+        top = from_fraction if from_fraction is not None else 1.0
         for stage in range(stages - 1, -1, -1):
-            orientation = self.pour_orientation_for(target_y, stage / stages)
+            orientation = self.pour_orientation_for(target_y, top * stage / stages)
             if not (yield from self._drive_to_steps(position, False, steps, orientation)):
                 return False
         return True
 
     def center_pour_over_steps(self, mouth_target, start=None, attempts=4, steps=80,
-                               tolerance=0.012):
+                               tolerance=0.012, tilt_fraction=1.0):
         """Move the wrist until the tilted tube's mouth is over mouth_target.
 
         Aiming the wrist itself at the target pours onto the table beside it,
         because tilting swings the tube a long way out. Measuring the mouth and
         correcting for the residual is the same trick center_gripper_over uses
         for the fingers.
+
+        Unlike that one, this correction has to be bounded. The mouth does not
+        track the wrist one for one: moving the wrist changes the arm's
+        configuration, and with it how far the tube actually tips, so the
+        iteration can chase itself downward instead of converging. It walked the
+        wrist to 0.76 m that way - below grasp height - and the arm's own links
+        swept through the tubes standing between the source and the target.
         """
-        aim = list(start) if start is not None else [
+        origin = list(start) if start is not None else [
             mouth_target[0], mouth_target[1], POUR_Z
         ]
+        aim = list(origin)
         for _ in range(attempts):
             mouth = self.held_object_tip()
             if mouth is None:
@@ -240,12 +286,29 @@ class RobotController:
             error = [mouth_target[i] - mouth[i] for i in range(3)]
             if math.sqrt(sum(e * e for e in error)) <= tolerance:
                 return aim
+
             aim = [aim[i] + error[i] for i in range(3)]
+            aim = self._bounded_pour_aim(aim, origin)
             if not (yield from self._drive_to_steps(
-                aim, False, steps, self.pour_orientation_for(mouth_target[1])
+                aim, False, steps,
+                self.pour_orientation_for(mouth_target[1], tilt_fraction)
             )):
                 return None
         return aim
+
+    def _bounded_pour_aim(self, aim, origin):
+        """Keep the pour alignment inside the region it is safe to search.
+
+        Pouring a little high is harmless. Dropping the arm into the bench is not,
+        so the height is floored, and sideways drift is capped so a diverging
+        correction cannot walk the arm across the workspace.
+        """
+        limited = [
+            min(origin[0] + POUR_AIM_LIMIT, max(origin[0] - POUR_AIM_LIMIT, aim[0])),
+            min(origin[1] + POUR_AIM_LIMIT, max(origin[1] - POUR_AIM_LIMIT, aim[1])),
+            min(LIFT_Z, max(POUR_WRIST_FLOOR, aim[2])),
+        ]
+        return limited
 
     def hover_over_steps(self, x, y, steps=HOVER_STEPS):
         """Park the tool above (x, y) so the operator can see which object is meant.
@@ -294,6 +357,18 @@ class RobotController:
         left = self.physics.getLinkState(self.gripper_id, 4)[4]
         right = self.physics.getLinkState(self.gripper_id, 6)[4]
         return [(a + b) / 2 for a, b in zip(left, right)]
+
+    def held_object_tilt(self):
+        """How far the held tube is off vertical, in degrees.
+
+        Below 90 the mouth still points upward, which means the tube is being
+        tipped back rather than poured out.
+        """
+        if self._held_object is None:
+            return 0.0
+        _, orientation = self.get_object_state(self._held_object)
+        matrix = self.physics.getMatrixFromQuaternion(orientation)
+        return math.degrees(math.acos(max(-1.0, min(1.0, matrix[8]))))
 
     def held_object_tip(self, length=TEST_TUBE_HEIGHT):
         """World position of the open end of whatever is currently held.
@@ -473,7 +548,6 @@ class RobotController:
         # that tipping lands the mouth on the target instead of beside it.
         sign = 1.0 if target[1] < ROBOT_BASE_POSITION[1] else -1.0
         staging = [target[0], target[1] + sign * POUR_SWING, LIFT_Z]
-        tipped = self.pour_orientation_for(target[1])
 
         grasp_constraint = None
         keep_holding = False
@@ -499,13 +573,20 @@ class RobotController:
             # Carried upright, at clearance height, to one side of the target.
             if not (yield from self._carry_steps(source, staging)):
                 return False
-            # Tipped in place, high and clear of everything.
-            if not (yield from self._tilt_in_place_steps(staging, target[1])):
+            # Tipped in place, high and clear of everything. This reports how far
+            # it actually had to roll, which everything downstream has to keep
+            # commanding or the tube springs back upright.
+            tilt_fraction = yield from self._tilt_in_place_steps(
+                staging, target[1], mouth_target
+            )
+            if not tilt_fraction:
                 return False
             # Lowered onto the target. center_pour_over_steps corrects what the
             # swing estimate got wrong, which is now centimetres rather than the
             # whole 0.26 m.
-            pour_aim = yield from self.center_pour_over_steps(mouth_target, start=staging)
+            pour_aim = yield from self.center_pour_over_steps(
+                mouth_target, start=staging, tilt_fraction=tilt_fraction
+            )
             if pour_aim is None:
                 return False
             if not (yield from self._step_for(POUR_HOLD_STEPS)):
@@ -514,11 +595,13 @@ class RobotController:
 
             # Straight back up, still tipped, then straighten before travelling.
             if not (yield from self._drive_to_steps(
-                [pour_aim[0], pour_aim[1], LIFT_Z], False, 200, tipped
+                [pour_aim[0], pour_aim[1], LIFT_Z], False, 200,
+                self.pour_orientation_for(target[1], tilt_fraction)
             )):
                 return False
             if not (yield from self._untilt_in_place_steps(
-                [pour_aim[0], pour_aim[1], LIFT_Z], target[1]
+                [pour_aim[0], pour_aim[1], LIFT_Z], target[1],
+                from_fraction=tilt_fraction
             )):
                 return False
 
