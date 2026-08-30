@@ -156,6 +156,18 @@ ACTIONS = [
 ]
 
 
+def action_is_irreversible(key):
+    """Whether `key` cannot be undone, and so deserves the longer commit hold.
+
+    Unknown keys answer True: demanding a deliberate hold for something we do
+    not recognise is the safe way to be wrong.
+    """
+    for action in ACTIONS:
+        if action["key"] == key:
+            return not action["reversible"]
+    return True
+
+
 def action_needs_target(key):
     """Whether `key` needs a destination before it can run.
 

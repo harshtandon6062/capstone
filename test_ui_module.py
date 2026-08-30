@@ -48,10 +48,9 @@ class FakeRegistry:
         return self._occupied
 
 
-ACTIONS = [
-    {"key": "move", "label": "MOVE", "hint": "pick & place", "reversible": True},
-    {"key": "pour", "label": "POUR", "hint": "cannot undo", "reversible": False},
-]
+# The real table, not a stand-in. A local copy with fewer entries hid an action
+# row that only fitted two tiles.
+from config import ACTIONS
 
 STATES = list(ui_module.INSTRUCTIONS) + ["SOME_UNKNOWN_STATE"]
 
@@ -161,3 +160,15 @@ def test_sprite_cache_is_reused_and_bounded():
     for i in range(ui_text._MAX_ENTRIES + 10):
         ui_text.text(np.zeros((30, 200, 3), np.uint8), f"unique {i}", (5, 20), 12)
     assert len(ui_text._sprites) <= ui_text._MAX_ENTRIES
+
+
+def test_confirming_a_target_less_action_warns_it_cannot_be_undone():
+    """CONFIRM_ACTION is the only place the operator is told mix is final."""
+    panel = render(state="CONFIRM_ACTION", pending_action="mix")
+    reversible = render(state="CONFIRM_ACTION", pending_action="move")
+    assert not np.array_equal(panel, reversible)
+
+
+def test_confirm_action_state_is_known_to_the_panel():
+    """An unlisted state falls back to printing its own name, which is a bug."""
+    assert "CONFIRM_ACTION" in ui_module.INSTRUCTIONS

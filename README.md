@@ -44,7 +44,8 @@ Three tasks, chosen at the launcher by holding a dynamic gesture or pressing a k
 Inside a task the operator works through a small state machine: pick a source
 tube, pick an action, pick a target if the action needs one, confirm, watch it
 run. A move goes to a **spot**; a pour goes into another **tube**; a mix needs no
-target at all because it acts on the tube already chosen.
+target at all because it acts on the tube already chosen — but it is still
+confirmed before it runs, because it cannot be undone.
 
 ---
 
@@ -329,7 +330,7 @@ The wrist now stays above 0.822 throughout, against tube tops at 0.725.
 |---|---|---|---|
 | Move | 1.5 s | yes | kept |
 | Pour | 2.0 s | refused | cleared |
-| Mix | none — see below | refused | kept |
+| Mix | 2.0 s | refused | kept |
 
 Pouring clears the undo history rather than just declining its own undo, because
 you cannot undo an earlier move back into a world that no longer exists. The
@@ -339,6 +340,27 @@ and both the target and confirmation screens say it cannot be undone.
 This matters more than it looks. If every action is reversible, a confirmation
 step has nothing to protect and is just friction. One irreversible action is what
 makes the confirmation gate mean something.
+
+**How long you must hold is read from the table, not from the action's name.**
+`action_is_irreversible()` answers `True` for anything unrecognised, so a new
+action gets the careful treatment until someone says otherwise. When this was
+written as `pending_action == "pour"`, mix — which also refuses undo — inherited
+no confirmation at all.
+
+An action with no target still gets confirmed. Mix stops at `CONFIRM_ACTION`,
+which exists precisely because "nothing to select" is not the same as "nothing to
+agree to". The dynamic wrist-rotation shortcut selects mix and stops there too: a
+classifier reporting 0.75 confidence is not consent.
+
+### Mix does not change the tube's colour
+
+Stirring one tube does not alter what is in it, so `mix_contents()` marks the tube
+`MIXED` and leaves its colour alone. The panel label gains `(mixed)`; the
+simulation looks the same.
+
+This is deliberate. The previous implementation called
+`mix_colors(c, c)` — a colour averaged with itself, which is the identity — and so
+read as though a colour change were intended and broken.
 
 ### The operator panel
 
@@ -449,25 +471,6 @@ wrist before closing. Over five place-and-undo cycles on one tube, total drift
 fell from 93 mm to 31 mm and stopped accumulating in one direction. Reduced, not
 eliminated: expect a few millimetres per grasp. Press `R` to reset if tubes wander
 far enough to matter.
-
-### Mix commits without a confirmation
-
-`MixCommand` is irreversible — `undo()` returns `False` — but it does not get the
-confirmation hold that pour does, and `direct_dynamic_mix` in [main.py](main.py)
-starts it the moment the LSTM reports `wrist_rotation` at ≥ 0.75 confidence, with
-no pinch and no thumbs-up.
-
-In practice a mix is harmless: it stirs one tube and puts it back. But that is a
-judgement about this particular action, and the shortcut is the kind of thing that
-gets copied to the next one. Either give mix a confirm step or record in the code
-why it does not need one.
-
-### Mixing does not change the rendered colour
-
-`mix_contents()` calls `mix_colors(c, c)` — a colour averaged with itself, which
-is the identity. Stirring one tube arguably *should not* change what is in it, so
-the behaviour is defensible; but the call reads as though it does something, and
-the only visible effect is the panel label gaining `(mixed)`.
 
 ---
 

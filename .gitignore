@@ -1,2 +1,17 @@
 __pycache__/
 .pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Editors
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

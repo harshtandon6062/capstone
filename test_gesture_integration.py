@@ -1,7 +1,7 @@
 from gesture_controller import GestureController
 from hand_landmark_provider import HandLandmarkProvider
 from config import (ACTIONS, GESTURE_COOLDOWN, GESTURE_HOLD_DURATION,
-                    action_needs_target)
+                    action_is_irreversible, action_needs_target)
 
 
 def test_gesture_controller_emits_commands():
@@ -48,3 +48,33 @@ def test_unknown_action_is_assumed_to_need_a_target():
     """Refusing to start without a target is the safe way to be wrong."""
     assert action_needs_target("something_new") is True
     assert action_needs_target(None) is True
+
+
+def test_every_irreversible_action_is_treated_as_irreversible():
+    """The longer commit hold must follow the flag, not a hardcoded action name.
+
+    Mix had no confirmation at all because the check named pour specifically,
+    even though MixCommand.undo() also refuses.
+    """
+    for action in ACTIONS:
+        assert action_is_irreversible(action["key"]) is (not action["reversible"])
+
+    assert action_is_irreversible("pour") is True
+    assert action_is_irreversible("mix") is True
+    assert action_is_irreversible("move") is False
+
+
+def test_unknown_action_is_assumed_irreversible():
+    """Demanding a deliberate hold for something unrecognised is the safe error."""
+    assert action_is_irreversible("something_new") is True
+    assert action_is_irreversible(None) is True
+
+
+def test_a_target_less_action_is_still_confirmed():
+    """No destination to pick is not the same as nothing to confirm.
+
+    Mix needs no target and cannot be undone, so it is exactly the case where
+    skipping confirmation would be easiest and worst.
+    """
+    assert action_needs_target("mix") is False
+    assert action_is_irreversible("mix") is True

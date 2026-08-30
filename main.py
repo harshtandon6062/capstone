@@ -25,7 +25,7 @@ from ui_text import text as draw_text
 from safety_controller import EmergencyStopError, SafetyController, SafetyState
 from robot_controller import RobotController
 from commands import CommandInvoker, CommandMapper
-from object_registry import ObjectRegistry, mix_colors
+from object_registry import ObjectRegistry
 from perception import SimulatedPerception
 from config import (
     CUBE_COLOR_NAMES,
@@ -40,7 +40,7 @@ from config import (
     NAVIGATION_HOLD_DURATION,
     DYNAMIC_PREDICT_EVERY,
     MOTION_STEPS_PER_FRAME,
-    ACTIONS, action_needs_target,
+    ACTIONS, action_is_irreversible, action_needs_target,
     HOVER_OVER_SELECTION,
     IRREVERSIBLE_HOLD_DURATION,
     GRIPPER_BASE_ORIENTATION,
@@ -540,9 +540,11 @@ def run_pick_and_place(initial_action="move"):
         label = ACTIONS[action_index]["label"]
 
         if not ACTIONS[action_index]["needs_target"]:
-            system_state = "EXECUTING"
+            # No destination to pick does not mean nothing to confirm. Mix cannot
+            # be undone, so it stops here for the same deliberate hold pour gets.
+            system_state = "CONFIRM_ACTION"
             selected_handle = source_handle
-            print(f"Action chosen: {label}")
+            print(f"Action chosen: {label} - confirm to run")
             return
 
         # Set the state first: which objects count as selectable is read from it.
@@ -567,11 +569,11 @@ def run_pick_and_place(initial_action="move"):
         if not HOVER_OVER_SELECTION or active_motion is not None:
             return None
         if system_state not in ("SELECT_SOURCE", "CONFIRM_SOURCE", "SELECT_ACTION",
-                                "SELECT_DEST", "CONFIRM_DEST"):
+                                "CONFIRM_ACTION", "SELECT_DEST", "CONFIRM_DEST"):
             return None
         # The action step is not a choice of object, so keep pointing at the tube
         # the action will be performed on.
-        if system_state == "SELECT_ACTION":
+        if system_state in ("SELECT_ACTION", "CONFIRM_ACTION"):
             return source_handle
         return selected_handle
 
@@ -618,7 +620,9 @@ def run_pick_and_place(initial_action="move"):
         source = registry.by_handle(source_handle)
         if source is None or source.empty:
             return
-        source.color_rgba = mix_colors(source.color_rgba, source.color_rgba)
+        # Deliberately no colour change. Stirring one tube does not alter what
+        # is in it; the previous mix_colors(c, c) averaged a colour with itself,
+        # which is the identity, and only read as though it did something.
         source.contents_name = "MIXED"
         apply_appearance(source)
 
@@ -708,10 +712,13 @@ def run_pick_and_place(initial_action="move"):
             and now - last_gesture_time > gesture_cooldown
         )
         if direct_dynamic_mix:
+            # A classifier reporting 0.75 is not consent. The shortcut skips the
+            # action menu, not the confirmation that mix cannot be undone.
             pending_action = "mix"
-            system_state = "EXECUTING"
+            system_state = "CONFIRM_ACTION"
+            selected_handle = source_handle
             last_gesture_time = now
-            print("Dynamic wrist rotation detected: executing MIX.")
+            print("Dynamic wrist rotation detected: MIX selected - confirm to run.")
 
         if gesture == "unknown":
             held_gesture = None
@@ -722,8 +729,9 @@ def run_pick_and_place(initial_action="move"):
 
         # Navigating is free to undo, so it fires quickly. Confirming a
         # destination starts the robot, so it stays a deliberate hold.
-        committing = system_state == "CONFIRM_DEST" and gesture == "thumbs_up"
-        irreversible = pending_action == "pour"
+        committing = (system_state in ("CONFIRM_DEST", "CONFIRM_ACTION")
+                      and gesture == "thumbs_up")
+        irreversible = action_is_irreversible(pending_action)
         if committing:
             required_hold = (IRREVERSIBLE_HOLD_DURATION if irreversible
                              else gesture_hold_duration)
@@ -856,6 +864,18 @@ def run_pick_and_place(initial_action="move"):
                     source_handle = None
                     pending_action = None
                     print("Cancelled — re-select a tube")
+                    last_gesture_time = now
+
+            elif system_state == "CONFIRM_ACTION":
+                if gesture == "thumbs_up":
+                    system_state = "EXECUTING"
+                    chosen = registry.by_handle(source_handle)
+                    print(f"Action CONFIRMED on {chosen.label if chosen else source_handle}")
+                    last_gesture_time = now
+                elif gesture == "thumb_left":
+                    system_state = "SELECT_ACTION"
+                    pending_action = None
+                    print("Action cancelled — re-select")
                     last_gesture_time = now
 
             elif system_state == "CONFIRM_DEST":
@@ -1064,9 +1084,15 @@ def run_pick_and_place(initial_action="move"):
                 system_state = "SELECT_SOURCE"
                 source_handle = None
                 pending_action = None
+            elif system_state == "CONFIRM_ACTION":
+                system_state = "SELECT_ACTION"
+                pending_action = None
             elif system_state == "CONFIRM_DEST":
                 system_state = "SELECT_DEST"
                 dest_handle = None
+        elif system_state == "CONFIRM_ACTION" and active_motion is None:
+            if key == 13 or key == ord(' '):
+                system_state = "EXECUTING"
         elif system_state == "SELECT_ACTION" and active_motion is None:
             if key in (83, ord('d'), 81, ord('a')):
                 nxt = step_action(action_index, 1 if key in (83, ord('d')) else -1)

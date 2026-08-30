@@ -57,6 +57,7 @@ INSTRUCTIONS = {
     "SELECT_SOURCE": ("Point L/R to select a tube, PINCH to choose", TEXT_MUTED),
     "CONFIRM_SOURCE": ("THUMBS UP to confirm | THUMB LEFT to cancel", ACCENT),
     "SELECT_ACTION": ("Point L/R to pick an action, PINCH to choose", TEXT_MUTED),
+    "CONFIRM_ACTION": ("THUMBS UP to confirm | THUMB LEFT to cancel", ACCENT),
     "SELECT_DEST": ("Point L/R to select a target, PINCH to choose", TEXT_MUTED),
     "CONFIRM_DEST": ("THUMBS UP to confirm | THUMB LEFT to cancel", ACCENT),
     "EXECUTING": ("Robot is moving - THUMBS DOWN or X to stop", WARN),
@@ -148,9 +149,13 @@ def _draw_actions(panel, actions, action_index, pending_action, is_selecting,
     if not actions:
         return
 
+    # Sized to fit however many actions there are, like the swatch rows. A fixed
+    # 172px cell fitted two and ran a third off the right edge of the panel.
+    count = len(actions)
     left = 110
-    cell = 172
-    gap = 16
+    span = PANEL_WIDTH - left - 15
+    cell = min(172, max(60, span // count - 12))
+    gap = (span - cell * count) // max(1, count - 1) if count > 1 else 0
     for position, action in enumerate(actions):
         x = left + position * (cell + gap)
         chosen = action["key"] == pending_action
@@ -218,7 +223,14 @@ def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
     instruction, instruction_color = INSTRUCTIONS.get(state, (state, TEXT_MUTED))
     # The operator has to learn this before committing, not after.
     pouring = pending_action == "pour"
-    if pouring and state == "CONFIRM_DEST":
+    chosen_action = next((a for a in actions if a["key"] == pending_action), None)
+    if (state == "CONFIRM_ACTION" and chosen_action is not None
+            and not chosen_action["reversible"]):
+        # An action with no destination still has to say what it costs.
+        instruction = (f"{chosen_action['label']} CANNOT BE UNDONE"
+                       " - hold THUMBS UP to commit")
+        instruction_color = DANGER
+    elif pouring and state == "CONFIRM_DEST":
         instruction = "POUR CANNOT BE UNDONE - hold THUMBS UP to commit"
         instruction_color = DANGER
     elif pouring and state == "SELECT_DEST":
@@ -233,7 +245,8 @@ def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
     # For a pour the target is another tube, so the tube row is where both the
     # source and the target are shown.
     selecting_tubes = state == "SELECT_SOURCE" or (state == "SELECT_DEST" and pouring)
-    confirming_tubes = state == "CONFIRM_SOURCE" or (state == "CONFIRM_DEST" and pouring)
+    confirming_tubes = (state in ("CONFIRM_SOURCE", "CONFIRM_ACTION")
+                        or (state == "CONFIRM_DEST" and pouring))
     chosen_tubes = {source_handle}
     if pouring:
         chosen_tubes.add(dest_handle)
