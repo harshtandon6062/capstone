@@ -201,8 +201,13 @@ def create_destination_spot(position, color):
     )
 
 
-def run_pick_and_place():
-    """Run the full pick-and-place simulation. Returns when user presses 'q'."""
+def run_pick_and_place(initial_action="move"):
+    """Run the full pick-and-place simulation. Returns when user presses 'q'.
+
+    `initial_action` is the action the launcher picked, and it preselects that
+    choice rather than skipping past it. Pouring cannot be undone, so choosing it
+    on the launcher screen should not also count as confirming it here.
+    """
 
     print("[START] application", flush=True)
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -408,7 +413,11 @@ def run_pick_and_place():
     # Which action the operator picked for this tube, and where they are in the
     # action list while choosing.
     pending_action = None
-    action_index = 0
+    # Which action is highlighted when the operator reaches the action step.
+    default_action_index = next(
+        (i for i, action in enumerate(ACTIONS) if action["key"] == initial_action), 0
+    )
+    action_index = default_action_index
     frame_index = 0
     hold_progress = 0.0
 
@@ -654,7 +663,7 @@ def run_pick_and_place():
             elif system_state == "CONFIRM_SOURCE":
                 if gesture == "thumbs_up":
                     system_state = "SELECT_ACTION"
-                    action_index = 0
+                    action_index = default_action_index
                     pending_action = None
                     chosen = registry.by_handle(source_handle)
                     print(f"Source CONFIRMED: {chosen.label if chosen else source_handle}")
@@ -917,7 +926,7 @@ def run_pick_and_place():
             if key == 13 or key == ord(' '):  # enter = confirm (like thumbs_up)
                 if system_state == "CONFIRM_SOURCE":
                     system_state = "SELECT_ACTION"
-                    action_index = 0
+                    action_index = default_action_index
                     pending_action = None
                 elif system_state == "CONFIRM_DEST":
                     system_state = "EXECUTING"

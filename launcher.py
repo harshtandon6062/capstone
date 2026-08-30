@@ -50,10 +50,16 @@ lm_options = HandLandmarkerOptions(
     num_hands=1,
 )
 
+# "action" is what the pick-and-place module should start with highlighted.
+# A task with no action is not implemented yet and says so instead of silently
+# doing nothing, which is what "Coming Soon" used to do while still reading 100%.
 TASKS = [
-    {"gesture": "grasp", "name": "Pick & Place", "status": "READY", "color": (0, 255, 0)},
-    {"gesture": "tilt", "name": "Pour", "status": "Coming Soon", "color": (0, 200, 255)},
-    {"gesture": "wrist_rotation", "name": "Mix", "status": "Coming Soon", "color": (255, 0, 255)},
+    {"gesture": "grasp", "name": "Pick & Place", "status": "READY",
+     "color": (0, 255, 0), "action": "move"},
+    {"gesture": "tilt", "name": "Pour", "status": "READY",
+     "color": (0, 200, 255), "action": "pour"},
+    {"gesture": "wrist_rotation", "name": "Mix", "status": "Coming Soon",
+     "color": (255, 0, 255), "action": None},
 ]
 
 HOLD_DURATION = 3.0
@@ -89,7 +95,8 @@ def draw_welcome_ui(current_gesture, confidence, hold_progress):
 
     det_color = (0, 255, 0) if current_gesture not in ("none", "None", "") else (100, 100, 100)
     cv2.putText(panel, f"Detected: {current_gesture.upper()}  ({confidence * 100:.0f}%)", (20, 210), font, 0.6, det_color, 2)
-    cv2.putText(panel, "B: Toggle Blue Glove | 1: Quick Pick&Place | Q: Quit", (50, 250), font, 0.4, (120, 120, 120), 1)
+    cv2.putText(panel, "1: Pick&Place  2: Pour  3: Mix | B: Blue Glove | Q: Quit",
+                (50, 250), font, 0.4, (120, 120, 120), 1)
 
     return panel
 
@@ -116,8 +123,8 @@ def run_launcher():
     print("=" * 50)
     print("GESTURE-CONTROLLED ROBOTICS LAUNCHER")
     print("=" * 50)
-    print("Hold GRASP for 3 seconds to start Pick & Place")
-    print("Press 1 for quick start, Q to quit")
+    print("Hold GRASP for 3 seconds to start Pick & Place, or TILT to start Pour")
+    print("Press 1 (Pick & Place), 2 (Pour), 3 (Mix), Q to quit")
     print("=" * 50)
 
     with HandLandmarker.create_from_options(lm_options) as landmarker:
@@ -190,17 +197,23 @@ def run_launcher():
                 break
             elif key == ord("b"):
                 blue_glove_mode = not blue_glove_mode
-            elif key == ord("1"):
-                trigger_task = TASKS[0]
+            elif key in (ord("1"), ord("2"), ord("3")):
+                trigger_task = TASKS[key - ord("1")]
 
             if trigger_task:
+                # An unimplemented task must say so. Recognising the gesture and
+                # then doing nothing is indistinguishable from a broken launcher.
+                if not trigger_task["action"]:
+                    print(f"{trigger_task['name']} is not implemented yet.")
+                    trigger_task = None
+                    continue
+
                 print(f"\n>>> Launching: {trigger_task['name']} <<<\n")
                 cap.release()
                 cv2.destroyWindow("Robotics Launcher")
 
-                if trigger_task["gesture"] == "grasp":
-                    from main import run_pick_and_place
-                    run_pick_and_place()
+                from main import run_pick_and_place
+                run_pick_and_place(initial_action=trigger_task["action"])
                 break
 
     cap.release()
