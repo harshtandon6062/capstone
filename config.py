@@ -117,35 +117,39 @@ POUR_TILT_RADIANS = 1.6
 POUR_Z = 1.09
 POUR_HOLD_STEPS = 150
 # Height of the tilted tube's mouth above the rim of the tube being poured into.
-POUR_CLEARANCE = 0.22
+POUR_CLEARANCE = 0.09
 # How far sideways the mouth swings when the tube is tipped over. The tube hangs
 # well below the wrist, so tipping it throws the open end a long way. The wrist is
 # parked this far off the target before tipping, so that tipping brings the mouth
 # onto the target rather than having to carry it there afterwards.
-POUR_SWING = 0.26
+POUR_SWING = 0.257
 # Bounds on the pour alignment. Lining the tube's mouth up with the target is a
 # fixed-point iteration, and the mouth does NOT track the wrist one for one:
 # moving the wrist changes the arm's configuration, and with it how far the tube
 # actually tips. Unbounded, that walked the wrist down to 0.76 m, where the arm's
 # own links sweep through the other tubes on the bench.
-POUR_WRIST_FLOOR = 0.98
-POUR_AIM_LIMIT = 0.15
+POUR_WRIST_FLOOR = 0.76
+# Sideways room the alignment may use. The dangerous direction is down, not
+# across: the wrist travels over the spot row, which is clear of anything solid.
+# A tight sideways cap just stopped the correction reaching the target.
+POUR_AIM_LIMIT = 0.35
 
-# How far the tube is tipped is chosen by measurement, not by a fixed angle.
+# Pouring is done with the tool yawed a quarter turn, and that matters far more
+# than it looks. Rolled at the default yaw, the tube's mouth swings along y -
+# straight over the neighbouring tubes - so putting the mouth on the target meant
+# dropping the wrist to bench height in the middle of the row, where the arm's own
+# links sweep everything off the table.
 #
-# Rolling the wrist swings the tube UP and over rather than tipping it down: at
-# 80 degrees the mouth is level with the wrist, and past that it is above it.
-# Measured, mouth height relative to the wrist goes -0.255 m upright, -0.170 at
-# half roll, +0.027 at full roll. So the steeper the tip, the lower the wrist has
-# to go to keep the mouth over a tube standing on the table - and a steep tip
-# demands the wrist at bench height, where the arm's own links sweep through
-# everything else. That is what was throwing tubes across the table.
+# Yawed 90 degrees the swing is along x instead, over the row of destination
+# spots, which are flat markers with no collision geometry at all. The arm can
+# come down there without touching anything, so the tube can be tipped properly
+# level instead of barely tilted.
 #
-# So the tilt is ramped only as far as still leaves the wrist above
-# POUR_WRIST_FLOOR, which is grasp height and demonstrably safe because ordinary
-# picking descends there without touching a neighbour.
-POUR_TILT_STAGES = 8
-POUR_TILT_MAX_FRACTION = 1.5
+# Measured at this yaw: 84 degrees of tilt, mouth 0.257 m along -x from the wrist
+# and level with it.
+POUR_YAW = -1.5707963267948966
+POUR_TILT_STAGES = 6
+POUR_TILT_MAX_FRACTION = 1.0
 
 # An irreversible action gets a longer, more deliberate confirmation than one
 # that can be undone. Same interface, different cost of being wrong.

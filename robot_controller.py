@@ -11,14 +11,14 @@ from config import (
     POUR_AIM_LIMIT,
     POUR_HOLD_STEPS,
     POUR_TILT_STAGES,
+    POUR_YAW,
     POUR_SWING,
     POUR_TILT_MAX_FRACTION,
     POUR_WRIST_FLOOR,
     POUR_TILT_RADIANS,
-    POUR_Z,
-    ROBOT_BASE_POSITION,
     TARGET_EULER,
     TEST_TUBE_HEIGHT,
+    TEST_TUBE_RADIUS,
 )
 from safety_controller import EmergencyStopError, SafetyState
 
@@ -186,21 +186,21 @@ class RobotController:
                 return None
         return (aim_x, aim_y)
 
-    def pour_orientation_for(self, target_y, fraction=1.0):
-        """Roll the wrist so the tube's mouth swings toward the robot, not away.
+    def pour_orientation_for(self, target_y=None, fraction=1.0):
+        """Tool orientation for pouring: rolled over, and yawed a quarter turn.
 
-        Tilting throws the mouth about 0.26 m to one side, and which side depends
-        on the sign of the roll. Rolling the wrong way puts the wrist 0.26 m
-        beyond the target, which for the outermost tube is past the arm's reach -
-        the mouth then never lines up and the contents would miss it entirely.
+        The yaw is the important part. Rolled at the default yaw the mouth swings
+        along y, straight over the neighbouring tubes, so putting it on the target
+        meant dropping the wrist into the middle of the row. Yawed, the swing is
+        along x instead - over the destination spots, which are flat markers with
+        no collision geometry - so the arm can come down there without touching
+        anything and the tube can be tipped properly level.
+
+        target_y is accepted and ignored; the swing no longer depends on which
+        side of the robot the target is.
         """
-        sign = 1.0 if target_y < ROBOT_BASE_POSITION[1] else -1.0
         return self.physics.getQuaternionFromEuler(
-            [
-                TARGET_EULER[0] + sign * POUR_TILT_RADIANS * fraction,
-                TARGET_EULER[1],
-                TARGET_EULER[2],
-            ]
+            [POUR_TILT_RADIANS * fraction, TARGET_EULER[1], POUR_YAW]
         )
 
     def _tilt_in_place_steps(self, position, target_y, mouth_target,
@@ -259,26 +259,33 @@ class RobotController:
                 return False
         return True
 
-    def center_pour_over_steps(self, mouth_target, start=None, attempts=4, steps=80,
-                               tolerance=0.012, tilt_fraction=1.0):
-        """Move the wrist until the tilted tube's mouth is over mouth_target.
+    def center_pour_over_steps(self, mouth_target, start=None, attempts=6, steps=90,
+                               tolerance=0.010, tilt_fraction=1.0, gain=0.7):
+        """Put the tilted tube's mouth over the target.
 
-        Aiming the wrist itself at the target pours onto the table beside it,
-        because tilting swings the tube a long way out. Measuring the mouth and
-        correcting for the residual is the same trick center_gripper_over uses
-        for the fingers.
+        Where the mouth sits relative to the wrist is a rigid offset once the tube
+        is tipped, so it is measured once and the wrist is sent straight to
+        mouth_target minus that offset. Only the residual is then corrected.
 
-        Unlike that one, this correction has to be bounded. The mouth does not
-        track the wrist one for one: moving the wrist changes the arm's
-        configuration, and with it how far the tube actually tips, so the
-        iteration can chase itself downward instead of converging. It walked the
-        wrist to 0.76 m that way - below grasp height - and the arm's own links
-        swept through the tubes standing between the source and the target.
+        The earlier version iterated from the start, each pass re-measuring and
+        re-aiming. Moving the wrist changes the arm's configuration, which changes
+        the offset, so the passes chased each other instead of settling - for some
+        targets it wandered a metre away.
         """
-        origin = list(start) if start is not None else [
-            mouth_target[0], mouth_target[1], POUR_Z
-        ]
-        aim = list(origin)
+        mouth = self.held_object_tip()
+        if mouth is None:
+            return None
+        wrist = self.tool_position()
+        offset = [mouth[i] - wrist[i] for i in range(3)]
+        origin = list(start) if start is not None else list(wrist)
+        aim = self._bounded_pour_aim(
+            [mouth_target[i] - offset[i] for i in range(3)], origin
+        )
+        if not (yield from self._drive_to_steps(
+            aim, False, steps, self.pour_orientation_for(None, tilt_fraction)
+        )):
+            return None
+
         for _ in range(attempts):
             mouth = self.held_object_tip()
             if mouth is None:
@@ -286,12 +293,14 @@ class RobotController:
             error = [mouth_target[i] - mouth[i] for i in range(3)]
             if math.sqrt(sum(e * e for e in error)) <= tolerance:
                 return aim
-
-            aim = [aim[i] + error[i] for i in range(3)]
-            aim = self._bounded_pour_aim(aim, origin)
+            # Damped: the offset between mouth and wrist shifts as the arm moves,
+            # so correcting by the whole residual each time makes the passes
+            # overshoot past each other instead of settling.
+            aim = self._bounded_pour_aim(
+                [aim[i] + gain * error[i] for i in range(3)], origin
+            )
             if not (yield from self._drive_to_steps(
-                aim, False, steps,
-                self.pour_orientation_for(mouth_target[1], tilt_fraction)
+                aim, False, steps, self.pour_orientation_for(None, tilt_fraction)
             )):
                 return None
         return aim
@@ -384,6 +393,21 @@ class RobotController:
         matrix = self.physics.getMatrixFromQuaternion(orientation)
         axis = (matrix[2], matrix[5], matrix[8])
         return [position[i] + axis[i] * length for i in range(3)]
+
+    def pour_is_aimed(self, mouth_target, tolerance=TEST_TUBE_RADIUS):
+        """Is the mouth actually over the target before anything is transferred?
+
+        The same principle as grasp_is_valid. Lining the pour up depends on how
+        far the arm managed to tip the tube, which varies with its configuration,
+        so occasionally it cannot be aimed at all. Pouring anyway would put the
+        contents on the bench and report success; refusing says so instead.
+        """
+        mouth = self.held_object_tip()
+        if mouth is None:
+            return False
+        return math.hypot(
+            mouth[0] - mouth_target[0], mouth[1] - mouth_target[1]
+        ) <= tolerance
 
     def grasp_is_valid(self, object_id, tolerance=GRASP_TOLERANCE):
         """Are the fingers actually around the object before we call this a grasp?
@@ -546,8 +570,10 @@ class RobotController:
         ]
         # Park the wrist off to the side by however far the mouth will swing, so
         # that tipping lands the mouth on the target instead of beside it.
-        sign = 1.0 if target[1] < ROBOT_BASE_POSITION[1] else -1.0
-        staging = [target[0], target[1] + sign * POUR_SWING, LIFT_Z]
+        # The wrist parks toward the robot by however far the mouth will swing,
+        # so that tipping brings the mouth onto the target. That puts it over the
+        # spot row, which is clear of anything solid.
+        staging = [target[0] + POUR_SWING, target[1], LIFT_Z]
 
         grasp_constraint = None
         keep_holding = False
@@ -589,43 +615,29 @@ class RobotController:
             )
             if pour_aim is None:
                 return False
+            # Nothing is transferred unless the mouth really is over the target.
+            # A refused pour still has to set the tube down: returning here with
+            # it gripped and tipped would drop it from mid-air.
+            if not self.pour_is_aimed(mouth_target):
+                if not (yield from self._put_tube_back_steps(
+                    pour_aim, return_position, target[1], tilt_fraction
+                )):
+                    yield from self.abort_safely_steps()
+                grasp_constraint = None
+                return False
             if not (yield from self._step_for(POUR_HOLD_STEPS)):
                 return False
             poured = True
 
-            # Straight back up, still tipped, then straighten before travelling.
-            if not (yield from self._drive_to_steps(
-                [pour_aim[0], pour_aim[1], LIFT_Z], False, 200,
-                self.pour_orientation_for(target[1], tilt_fraction)
+            if not (yield from self._put_tube_back_steps(
+                pour_aim, return_position, target[1], tilt_fraction
             )):
+                # Carrying it home failed. Do not fall through still holding it -
+                # set it down wherever the arm is instead of dropping it.
+                yield from self.abort_safely_steps()
+                grasp_constraint = None
                 return False
-            if not (yield from self._untilt_in_place_steps(
-                [pour_aim[0], pour_aim[1], LIFT_Z], target[1],
-                from_fraction=tilt_fraction
-            )):
-                return False
-
-            if not (yield from self._carry_steps(
-                [pour_aim[0], pour_aim[1], LIFT_Z], return_position
-            )):
-                return False
-            drop = yield from self.center_gripper_over_steps(
-                return_position[0], return_position[1], False
-            )
-            if drop is None:
-                return False
-            if not (yield from self.move_to_steps([drop[0], drop[1], GRAB_Z], False, 200)):
-                return False
-            if not (yield from self.move_to_steps([drop[0], drop[1], GRAB_Z], True, 100)):
-                return False
-            self._release_object(grasp_constraint)
             grasp_constraint = None
-            if not (yield from self.move_to_steps(
-                [return_position[0], return_position[1], HOVER_Z], True, 100
-            )):
-                return False
-            if not (yield from self.reset_robot_steps()):
-                return False
         except EmergencyStopError:
             keep_holding = True
             raise
@@ -635,6 +647,41 @@ class RobotController:
                     and not keep_holding):
                 self._release_object(grasp_constraint)
         return poured
+
+    def _put_tube_back_steps(self, pour_aim, return_position, target_y, tilt_fraction):
+        """Straighten up and set the held tube back down where it came from.
+
+        Used by the successful pour and by a refused one alike, because either
+        way the arm is left holding a tipped tube in mid-air and letting go there
+        would drop it.
+        """
+        upright = [pour_aim[0], pour_aim[1], LIFT_Z]
+        if not (yield from self._drive_to_steps(
+            upright, False, 200, self.pour_orientation_for(target_y, tilt_fraction)
+        )):
+            return False
+        if not (yield from self._untilt_in_place_steps(
+            upright, target_y, from_fraction=tilt_fraction
+        )):
+            return False
+        if not (yield from self._carry_steps(upright, return_position)):
+            return False
+        drop = yield from self.center_gripper_over_steps(
+            return_position[0], return_position[1], False
+        )
+        if drop is None:
+            return False
+        if not (yield from self.move_to_steps([drop[0], drop[1], GRAB_Z], False, 200)):
+            return False
+        if not (yield from self.move_to_steps([drop[0], drop[1], GRAB_Z], True, 100)):
+            return False
+        if self._held_constraint is not None:
+            self._release_object(self._held_constraint)
+        if not (yield from self.move_to_steps(
+            [return_position[0], return_position[1], HOVER_Z], True, 100
+        )):
+            return False
+        return (yield from self.reset_robot_steps())
 
     def pour(self, source_object, target_object, return_position):
         return self._drain(
