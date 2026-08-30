@@ -23,7 +23,9 @@ class PerceptionSource(Protocol):
             handle      backend id used to command the object (PyBullet body id)
             label       human-readable name, e.g. "Red tube"
             color_name  short tag, e.g. "RED"
-            color_rgba  [r, g, b, a] floats 0-1 - the single source of truth for colour
+            color_rgba  [r, g, b, a] floats 0-1 - what the object currently holds
+            identity_rgba  optional; the marking that names the object and never
+                        changes. Defaults to color_rgba when absent.
             position    [x, y, z] in world coordinates
             kind        "source" or "destination"
         """
@@ -42,13 +44,14 @@ class SimulatedPerception:
         self._sources = list(sources)
         self._destinations = list(destinations)
 
-    def add_source(self, handle, label, color_name, color_rgba):
+    def add_source(self, handle, label, color_name, color_rgba, identity_rgba=None):
         self._sources.append(
             {
                 "handle": handle,
                 "label": label,
                 "color_name": color_name,
                 "color_rgba": list(color_rgba),
+                "identity_rgba": list(identity_rgba or color_rgba),
             }
         )
 
@@ -63,15 +66,17 @@ class SimulatedPerception:
             }
         )
 
-    def set_source_color(self, handle, color_rgba, label=None, color_name=None):
-        """Record that an object's contents changed, so later detections agree."""
+    def set_source_contents(self, handle, color_rgba, contents_name=None):
+        """Record that an object's contents changed, so later detections agree.
+
+        Deliberately cannot touch identity_rgba, label or color_name: what a tube
+        holds changes, what it is does not.
+        """
         for entry in self._sources:
             if entry["handle"] == handle:
                 entry["color_rgba"] = list(color_rgba)
-                if label is not None:
-                    entry["label"] = label
-                if color_name is not None:
-                    entry["color_name"] = color_name
+                if contents_name is not None:
+                    entry["contents_name"] = contents_name
                 return entry
         return None
 
@@ -86,6 +91,7 @@ class SimulatedPerception:
                     "label": entry["label"],
                     "color_name": entry["color_name"],
                     "color_rgba": entry["color_rgba"],
+                    "identity_rgba": entry["identity_rgba"],
                     "position": list(position),
                     "kind": "source",
                 }

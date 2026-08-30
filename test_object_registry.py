@@ -176,7 +176,7 @@ def test_pouring_two_full_tubes_together_mixes_them():
     registry.transfer_contents(100, 101)
 
     assert registry.by_handle(101).color_rgba == mix_colors(red, green)
-    assert registry.by_handle(101).color_name == "MIXED"
+    assert registry.by_handle(101).contents_name == "MIXED"
 
 
 def test_an_empty_tube_has_nothing_to_pour():
@@ -213,3 +213,51 @@ def test_refresh_updates_position_without_disturbing_contents():
 
     assert registry.by_handle(100).position == [0.9, -0.1, 0.65]
     assert registry.by_handle(100).empty, "a position update wiped the contents"
+
+
+# ── identity survives whatever happens to the contents ──────────────────────
+
+def test_a_tube_keeps_its_name_after_being_emptied():
+    """Regression: emptying a tube used to erase which tube it was, so two empty
+    tubes were impossible to tell apart."""
+    registry = build_registry(2, 0)
+    registry.transfer_contents(100, 101)
+
+    emptied = registry.by_handle(100)
+    assert emptied.empty
+    assert emptied.label == "Tube 0", "the tube was renamed"
+    assert emptied.color_name == "RED", "the tube lost its marking"
+    assert emptied.identity_rgba == [1.0, 0, 0, 1], "the marking colour changed"
+    assert emptied.description == "Tube 0 (empty)"
+
+
+def test_two_empty_tubes_are_still_distinguishable():
+    registry = build_registry(3, 0)
+    registry.transfer_contents(100, 102)
+    registry.transfer_contents(101, 102)
+
+    first, second = registry.by_handle(100), registry.by_handle(101)
+    assert first.empty and second.empty
+    assert first.identity_bgr != second.identity_bgr, "both empty tubes look alike"
+    assert first.color_name != second.color_name
+
+
+def test_a_mixed_tube_keeps_its_own_name():
+    registry = build_registry(2, 0)
+    registry.transfer_contents(100, 101)
+
+    mixed = registry.by_handle(101)
+    assert mixed.color_name == "GREEN", "the tube was renamed after being mixed"
+    assert mixed.contents_name == "MIXED"
+    assert mixed.description == "Tube 1 (mixed)"
+    assert mixed.identity_rgba == [0, 1.0, 0, 1]
+
+
+def test_reset_restores_contents_without_touching_identity():
+    registry = build_registry(2, 0)
+    registry.transfer_contents(100, 101)
+    registry.reset()
+
+    assert registry.by_handle(101).contents_name == "GREEN"
+    assert registry.by_handle(101).identity_rgba == [0, 1.0, 0, 1]
+    assert registry.by_handle(100).description == "Tube 0"

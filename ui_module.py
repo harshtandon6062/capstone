@@ -66,19 +66,27 @@ def _draw_row(panel, objects, y, selected_handle, chosen_handles, is_selecting,
                         (x + 6, y + 27), font, 0.4, (80, 80, 80), 1)
             continue
 
-        color = obj.color_bgr
-        cv2.rectangle(panel, (x, y), (x + cell, y + 40), color, -1)
+        # The frame is the cap: it names the tube and never changes. The middle
+        # is what the tube currently holds, and goes dark when there is nothing
+        # in it. One square therefore answers both "which tube" and "what is in
+        # it", which used to be a single colour trying to say both.
+        cv2.rectangle(panel, (x, y), (x + cell, y + 40), obj.identity_bgr, -1)
         cv2.rectangle(panel, (x, y), (x + cell, y + 40), (255, 255, 255), 1)
 
-        caption = "EMPTY" if obj.empty else obj.color_name[:3]
-        text_size = cv2.getTextSize(caption, font, 0.5, 2)[0]
+        inset = 7
+        contents = (35, 35, 35) if obj.empty else obj.color_bgr
+        cv2.rectangle(panel, (x + inset, y + inset),
+                      (x + cell - inset, y + 40 - inset), contents, -1)
+
+        caption = obj.color_name[:3]
+        text_size = cv2.getTextSize(caption, font, 0.45, 2)[0]
         cv2.putText(
             panel,
             caption,
-            (x + max(2, (cell - text_size[0]) // 2), y + 27),
+            (x + max(2, (cell - text_size[0]) // 2), y + 26),
             font,
-            0.5,
-            _readable_text_color(color),
+            0.45,
+            (150, 150, 150) if obj.empty else _readable_text_color(contents),
             2,
         )
 
@@ -166,13 +174,15 @@ def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
     source = registry.by_handle(source_handle) if source_handle is not None else None
     destination = registry.by_handle(dest_handle) if dest_handle is not None else None
 
-    source_text = source.label if source is not None else "-"
-    destination_text = destination.label if destination is not None else "-"
+    source_text = source.description if source is not None else "-"
+    destination_text = destination.description if destination is not None else "-"
     undo_text = "available" if undo_available else "unavailable"
 
-    cv2.putText(panel, f"SOURCE: {source_text}", (10, 50), font, 0.45, (220, 220, 220), 1)
-    cv2.putText(panel, f"TARGET: {destination_text}", (210, 50), font, 0.45, (220, 220, 220), 1)
-    cv2.putText(panel, f"UNDO: {undo_text}", (420, 50), font, 0.45,
+    # Names carry their contents now ("Red tube (mixed)"), so these lines are
+    # longer than they used to be and need the room.
+    cv2.putText(panel, f"SOURCE: {source_text}", (10, 50), font, 0.4, (220, 220, 220), 1)
+    cv2.putText(panel, f"TARGET: {destination_text}", (240, 50), font, 0.4, (220, 220, 220), 1)
+    cv2.putText(panel, f"UNDO: {undo_text}", (470, 50), font, 0.4,
                 (0, 255, 0) if undo_available else (140, 140, 140), 1)
 
     instruction, instruction_color = INSTRUCTIONS.get(state, (state, (200, 200, 200)))

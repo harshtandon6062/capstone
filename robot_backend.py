@@ -34,6 +34,14 @@ class RobotBackend(Protocol):
     def pour_steps(self, source_object, target_object, return_position):
         """Generator. Tip one container into another, then set the first one back."""
 
+    def hover_over_steps(self, x, y):
+        """Generator. Point at a workspace position without touching it.
+
+        This is how the operator learns which real object the panel means before
+        confirming anything. On hardware it is the arm parking above the object;
+        the mechanism differs, the promise does not.
+        """
+
     def abort_safely_steps(self):
         """Generator. Give up on the current action without dropping what is held."""
 
@@ -50,6 +58,7 @@ def conforms(candidate):
         "pick_and_place_steps",
         "reverse_pick_and_place_steps",
         "pour_steps",
+        "hover_over_steps",
         "abort_safely_steps",
     )
     return all(hasattr(candidate, name) for name in required)

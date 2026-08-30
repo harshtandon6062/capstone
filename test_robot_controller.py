@@ -212,3 +212,29 @@ def test_undo_also_refuses_to_fake_a_grasp():
         99, [0.75, -0.45, 0.625], [0, 0, 0, 1]
     ) is False
     assert physics.constraints == []
+
+
+def test_hovering_points_without_reaching():
+    """Pointing must stay at clearance height - it is a gesture, not a grasp."""
+    physics, controller = make_controller()
+    physics.targets.clear()
+
+    controller.hover_over(0.75, -0.21)
+
+    assert physics.targets, "hovering commanded no motion"
+    for target in physics.targets:
+        assert target[2] == LIFT_Z, f"hover dropped to {target[2]}, below clearance"
+    assert physics.targets[-1][:2] == [0.75, -0.21]
+    assert physics.constraints == [], "pointing at something must not pick it up"
+    assert not controller.is_holding
+
+
+def test_hovering_can_be_interrupted_part_way():
+    """The operator will move on before the arm arrives, and that must be fine."""
+    physics, controller = make_controller()
+    runner = controller.hover_over_steps(0.75, -0.45)
+    for _ in range(5):
+        next(runner)
+    runner.close()
+
+    assert physics.constraints == []

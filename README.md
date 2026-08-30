@@ -161,6 +161,48 @@ The current PyBullet backend is isolated behind `RobotController`, leaving the
 command API suitable for a future ROS-backed controller.
 
 
+## Which tube is which
+
+Every tube has a **coloured cap** that never changes, and a **body** that shows
+what it currently holds. Those are two different questions and colour used to
+answer both at once, so pouring a tube out erased which tube it was — empty two
+of them and they became impossible to tell apart, on the table and in the panel.
+
+| | Says | Changes? |
+|---|---|---|
+| Cap | which tube this is | never |
+| Body / liquid | what is in it | yes — mixed, emptied, refilled |
+
+The panel swatch mirrors it: the **frame** is the cap colour, the **middle** is
+the contents, and it goes dark when the tube is empty. One square answers both
+questions. Names follow the same rule — the red-capped tube is "Red tube" whether
+it is full, "Red tube (mixed)" or "Red tube (empty)". It is never renamed.
+
+This is how real labware works: you label a tube, and pouring it out does not
+remove the label. It is also what makes camera perception possible later — if two
+empty tubes are indistinguishable to a technician, they are indistinguishable to
+a detector, and the registry cannot keep a stable handle for either.
+
+## The robot points at what you have selected
+
+While you are choosing, the arm parks above the highlighted tube or spot. Grey
+menu highlight tells you *a* square is selected; the arm tells you *which real
+object* that is, before you confirm anything.
+
+It stays at clearance height, never descends and never closes the gripper — it is
+a way of pointing, not a way of picking. Measured: it arrives within 38 mm worst
+case in about 7 frames, well inside the 60 mm that would make two neighbouring
+tubes ambiguous.
+
+This matters more than a UI nicety. The confirmation step is only worth having if
+the operator is sure *which object* they are confirming; a perfect confirm on the
+wrong referent is still the wrong action.
+
+On a real bench there is no rendered scene to draw a marker into, so the arm
+itself does the pointing — `hover_over_steps()` is part of the
+[robot_backend.py](robot_backend.py) contract and both the simulated and the
+Niryo controllers implement it. Set `HOVER_OVER_SELECTION = False` to turn it off.
+
 ## What can be selected, and when
 
 Nothing in the workspace is ever "used up". A tube is a tube: it can be moved as

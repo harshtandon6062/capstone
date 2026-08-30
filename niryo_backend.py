@@ -264,6 +264,17 @@ class NiryoArmController:
         yield from self._release_steps()
         return True
 
+    def hover_over_steps(self, x, y, z=None):
+        """Park above a position so the operator can see which object is meant.
+
+        On a bench there is no rendered scene to draw a marker into, so the arm
+        itself does the pointing. It stops at approach height and never descends.
+        """
+        table = [x, y, (z if z is not None else self.transform.origin[2])]
+        above = [table[0], table[1],
+                 table[2] + APPROACH_CLEARANCE / self.transform.scale]
+        return (yield from self.move_to_steps(above))
+
     def abort_safely_steps(self):
         """Set down what is held rather than opening the gripper in mid-air.
 

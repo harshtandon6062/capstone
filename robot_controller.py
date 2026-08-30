@@ -4,6 +4,7 @@ import time
 from config import (
     GRAB_Z,
     GRASP_TOLERANCE,
+    HOVER_STEPS,
     HOVER_Z,
     LIFT_Z,
     POUR_CLEARANCE,
@@ -245,6 +246,18 @@ class RobotController:
             )):
                 return None
         return aim
+
+    def hover_over_steps(self, x, y, steps=HOVER_STEPS):
+        """Park the tool above (x, y) so the operator can see which object is meant.
+
+        The panel can only say "the third square"; this says "this one". It is a
+        way of pointing, not a way of picking - it stays at clearance height, so
+        it cannot reach or disturb anything it is pointing at.
+        """
+        return (yield from self.move_to_steps([x, y, LIFT_Z], True, steps))
+
+    def hover_over(self, x, y, steps=HOVER_STEPS):
+        return self._drain(self.hover_over_steps(x, y, steps))
 
     def reset_robot_steps(self):
         self.safety.require_motion()

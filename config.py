@@ -48,6 +48,10 @@ TEST_TUBE_RADIUS = 0.022
 TEST_TUBE_HEIGHT = 0.10
 TEST_TUBE_RIM_RADIUS = 0.025
 TEST_TUBE_RIM_THICKNESS = 0.003
+# The cap. Big enough to read across the table, because it is what tells the
+# operator which tube this is once the contents no longer do.
+TEST_TUBE_CAP_RADIUS = 0.027
+TEST_TUBE_CAP_HEIGHT = 0.020
 TEST_TUBE_LIQUID_HEIGHT = 0.055
 DESTINATION_SPOT_RADIUS = 0.045
 DESTINATION_SPOT_HEIGHT = 0.002
@@ -84,6 +88,12 @@ GESTURE_STABILISER_WINDOW = 3
 # it, which is what keeps gestures live for the whole of a move. Roughly 16
 # steps at ~30 fps reproduces the pace the blocking version ran at.
 MOTION_STEPS_PER_FRAME = 16
+
+# While the operator is choosing, the arm hovers over whatever is highlighted, so
+# they can see which real object the panel means before they confirm anything.
+# Set False to keep the arm still.
+HOVER_OVER_SELECTION = True
+HOVER_STEPS = 110
 
 # How long a transient panel message stays on screen (seconds). Without this a
 # message drawn on one frame vanishes in about 30 ms and is never read.

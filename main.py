@@ -39,6 +39,7 @@ from config import (
     DYNAMIC_PREDICT_EVERY,
     MOTION_STEPS_PER_FRAME,
     ACTIONS,
+    HOVER_OVER_SELECTION,
     IRREVERSIBLE_HOLD_DURATION,
     GRIPPER_BASE_ORIENTATION,
     GRIPPER_BASE_POSITION,
@@ -59,8 +60,8 @@ from config import (
     TEST_TUBE_HEIGHT,
     TEST_TUBE_LIQUID_HEIGHT,
     TEST_TUBE_RADIUS,
-    TEST_TUBE_RIM_RADIUS,
-    TEST_TUBE_RIM_THICKNESS,
+    TEST_TUBE_CAP_HEIGHT,
+    TEST_TUBE_CAP_RADIUS,
 )
 
 
@@ -163,7 +164,17 @@ def open_simulation_window():
 
 
 def create_test_tube(position, color):
-    """Create a grabbable tube with simple collision and layered visuals."""
+    """Create a grabbable tube whose cap names it and whose liquid is its contents.
+
+    The body shows what the tube holds and is repainted as that changes. The cap
+    shows which tube it is and is never repainted. Colour used to do both jobs at
+    once, so pouring a tube out erased its identity and every empty tube looked
+    the same as every other.
+
+    A translucent glass body was tried first, with the liquid visible inside it.
+    The renderer draws the body over the liquid, so full and empty tubes came out
+    identical - the contents have to be on the outside to be seen at all.
+    """
     collision = p.createCollisionShape(
         p.GEOM_CYLINDER,
         radius=TEST_TUBE_RADIUS,
@@ -183,11 +194,11 @@ def create_test_tube(position, color):
         length=TEST_TUBE_LIQUID_HEIGHT,
         rgbaColor=[color[0] * 0.75, color[1] * 0.75, color[2] * 0.75, 1.0],
     )
-    rim_visual = p.createVisualShape(
+    cap_visual = p.createVisualShape(
         p.GEOM_CYLINDER,
-        radius=TEST_TUBE_RIM_RADIUS,
-        length=TEST_TUBE_RIM_THICKNESS * 2,
-        rgbaColor=[0.9, 0.9, 0.9, 1.0],
+        radius=TEST_TUBE_CAP_RADIUS,
+        length=TEST_TUBE_CAP_HEIGHT,
+        rgbaColor=color,
     )
     tube_id = p.createMultiBody(
         baseMass=0.1,
@@ -196,10 +207,10 @@ def create_test_tube(position, color):
         basePosition=position,
         linkMasses=[0, 0],
         linkCollisionShapeIndices=[-1, -1],
-        linkVisualShapeIndices=[liquid_visual, rim_visual],
+        linkVisualShapeIndices=[liquid_visual, cap_visual],
         linkPositions=[
             [0, 0, TEST_TUBE_LIQUID_HEIGHT / 2 + 0.003],
-            [0, 0, TEST_TUBE_HEIGHT + TEST_TUBE_RIM_THICKNESS],
+            [0, 0, TEST_TUBE_HEIGHT + TEST_TUBE_CAP_HEIGHT / 2 - 0.004],
         ],
         linkOrientations=[[0, 0, 0, 1], [0, 0, 0, 1]],
         linkInertialFramePositions=[[0, 0, 0], [0, 0, 0]],
@@ -433,6 +444,10 @@ def run_pick_and_place(initial_action="move"):
     # A motion an emergency stop interrupted. It stays suspended, still gripping,
     # until the operator clears the stop and the arm can set the sample down.
     interrupted_motion = None
+    # The arm points at whatever is highlighted while the operator is choosing,
+    # so they can see which real tube the panel means before confirming.
+    hover_motion = None
+    hover_handle = None
     # Which action the operator picked for this tube, and where they are in the
     # action list while choosing.
     pending_action = None
@@ -505,21 +520,48 @@ def run_pick_and_place(initial_action="move"):
             return usable[(usable.index(current) + step) % len(usable)]
         return usable[0]
 
+    def hover_target():
+        """Which object the arm should be pointing at, or None to stay still.
+
+        Only while the operator is choosing - during an action the arm is busy
+        doing the thing, and pointing at the same time would be a second motion
+        fighting the first.
+        """
+        if not HOVER_OVER_SELECTION or active_motion is not None:
+            return None
+        if system_state not in ("SELECT_SOURCE", "CONFIRM_SOURCE", "SELECT_ACTION",
+                                "SELECT_DEST", "CONFIRM_DEST"):
+            return None
+        # The action step is not a choice of object, so keep pointing at the tube
+        # the action will be performed on.
+        if system_state == "SELECT_ACTION":
+            return source_handle
+        return selected_handle
+
+    def stop_hovering():
+        nonlocal hover_motion, hover_handle
+        if hover_motion is not None:
+            hover_motion.close()
+        hover_motion = None
+        hover_handle = None
+
     def apply_appearance(obj):
-        """Make the simulation show what the registry says the tube contains."""
+        """Make the simulation show what the registry says the tube contains.
+
+        The body and the liquid. Never the cap - that is the tube's name, and
+        leaving it alone is what keeps two emptied tubes telling apart.
+        """
         if obj.kind != "source":
             return
         p.changeVisualShape(obj.handle, -1, rgbaColor=obj.color_rgba)
         if obj.empty:
-            # An emptied tube shows no liquid at all.
             p.changeVisualShape(obj.handle, 0, rgbaColor=[1.0, 1.0, 1.0, 0.0])
         else:
             p.changeVisualShape(
                 obj.handle, 0,
-                rgbaColor=[c * 0.75 for c in obj.color_rgba[:3]] + [1.0],
+                rgbaColor=[c * 0.8 for c in obj.color_rgba[:3]] + [1.0],
             )
-        perception.set_source_color(obj.handle, obj.color_rgba, obj.label,
-                                    obj.color_name)
+        perception.set_source_contents(obj.handle, obj.color_rgba, obj.contents_name)
 
     def transfer_contents(from_handle, into_handle):
         """Apply a completed pour to the workspace.
@@ -778,6 +820,17 @@ def run_pick_and_place(initial_action="move"):
                     print("Destination cancelled — re-select")
                     last_gesture_time = now
 
+        # ── Point at whatever is highlighted ──
+        wanted = hover_target()
+        if wanted != hover_handle:
+            stop_hovering()
+            hover_handle = wanted
+            highlighted = registry.by_handle(wanted) if wanted is not None else None
+            if highlighted is not None:
+                hover_motion = robot_controller.hover_over_steps(
+                    highlighted.position[0], highlighted.position[1]
+                )
+
         # ── Execute ──
         # Motions are driven from here a slice at a time rather than run inside
         # one blocking call. That is the whole point: the camera keeps being read
@@ -786,6 +839,7 @@ def run_pick_and_place(initial_action="move"):
         if (system_state == "EXECUTING"
                 and active_motion is None
                 and dest_handle is not None):
+            stop_hovering()
             if pending_action == "pour":
                 origin = registry.by_handle(source_handle)
                 command = command_mapper.pour(
@@ -835,11 +889,19 @@ def run_pick_and_place(initial_action="move"):
                             interrupted_motion = None
                     active_motion = None
                     active_kind = None
+                    hover_handle = None
                     system_state = "SELECT_SOURCE"
                     source_handle = None
                     dest_handle = None
                     pending_action = None
                     selected_handle = registry.first_selectable("move_source")
+        elif hover_motion is not None and safety.state is SafetyState.RUNNING:
+            try:
+                finished, _ = advance_motion(hover_motion, MOTION_STEPS_PER_FRAME)
+            except EmergencyStopError:
+                finished = True
+            if finished:
+                hover_motion = None
         else:
             # Never block here: the camera and gesture pipeline must keep running
             # while paused, otherwise the webcam freezes and a gesture-triggered
@@ -914,6 +976,7 @@ def run_pick_and_place(initial_action="move"):
                 p.resetBaseVelocity(handle, [0, 0, 0], [0, 0, 0])
             robot_controller.reset_robot()
             command_invoker.clear_history()
+            stop_hovering()
             registry.reset().refresh()
             # Put the liquids back too, not just the positions.
             for obj in registry.sources:

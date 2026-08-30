@@ -14,6 +14,12 @@ Two things are deliberately *derived* rather than remembered:
   * what a tube contains, which is a property of the tube and not of how many
     times it has been handled. A tube that has been moved is still a full tube.
 
+Identity and contents are kept apart for the same reason. Colour used to say both
+"which tube is this" and "what is in it", so pouring a tube out erased its name
+and two empty tubes became impossible to tell apart. `identity_rgba`, `label` and
+`color_name` name the tube and never change; `color_rgba`, `contents_name` and
+`empty` describe what is in it and do.
+
 Nothing here knows about PyBullet or OpenCV.
 """
 
@@ -58,24 +64,47 @@ class SceneObject:
     color_rgba: list
     position: list
     kind: str
+    identity_rgba: list = None
+    contents_name: str = None
     empty: bool = False
 
     def __post_init__(self):
-        # What this object looked like when the scene was built, so a reset can
-        # put its contents back rather than leaving it permanently empty.
-        self._initial = (list(self.color_rgba), self.label, self.color_name)
+        # A tube with no separate marking is its own marking, which is how
+        # destination spots and older scenes behave.
+        if self.identity_rgba is None:
+            self.identity_rgba = list(self.color_rgba)
+        if self.contents_name is None:
+            self.contents_name = self.color_name
+        # What this object held when the scene was built, so a reset can put its
+        # contents back rather than leaving it permanently empty.
+        self._initial = (list(self.color_rgba), self.contents_name)
 
     @property
     def color_bgr(self):
-        """Panel colour derived from the same value the simulation renders."""
+        """What the object currently holds, as an OpenCV colour."""
         return rgba_to_bgr(self.color_rgba)
+
+    @property
+    def identity_bgr(self):
+        """The marking that names the object. Never changes."""
+        return rgba_to_bgr(self.identity_rgba)
+
+    @property
+    def description(self):
+        """Name first, contents second - the way a technician would say it."""
+        if self.kind != "source":
+            return self.label
+        if self.empty:
+            return f"{self.label} (empty)"
+        if self.contents_name != self.color_name:
+            return f"{self.label} ({self.contents_name.lower()})"
+        return self.label
 
     def restore(self):
         """Put the contents back the way the scene started."""
-        colour, label, name = self._initial
+        colour, contents = self._initial
         self.color_rgba = list(colour)
-        self.label = label
-        self.color_name = name
+        self.contents_name = contents
         self.empty = False
 
 
@@ -96,6 +125,7 @@ class ObjectRegistry:
             handle = observation["handle"]
             existing = self._objects.get(handle)
             if existing is None:
+                identity = observation.get("identity_rgba")
                 self._objects[handle] = SceneObject(
                     handle=handle,
                     label=observation["label"],
@@ -103,6 +133,7 @@ class ObjectRegistry:
                     color_rgba=list(observation["color_rgba"]),
                     position=list(observation["position"]),
                     kind=observation["kind"],
+                    identity_rgba=list(identity) if identity else None,
                 )
                 self._order.append(handle)
             else:
@@ -242,18 +273,17 @@ class ObjectRegistry:
 
         if target.empty:
             target.color_rgba = list(source.color_rgba)
-            target.color_name = source.color_name
-            target.label = source.label
+            target.contents_name = source.contents_name
             target.empty = False
         else:
             target.color_rgba = mix_colors(source.color_rgba, target.color_rgba)
-            target.color_name = "MIXED"
-            target.label = "Mixed tube"
+            target.contents_name = "MIXED"
 
         source.color_rgba = list(EMPTY_LIQUID_RGBA)
-        source.color_name = "EMPTY"
-        source.label = "Empty tube"
+        source.contents_name = "EMPTY"
         source.empty = True
+        # Neither tube is renamed. The red-capped tube is still the red-capped
+        # tube whether it is full, mixed or empty.
         return source, target
 
     def reset(self):

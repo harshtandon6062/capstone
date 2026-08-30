@@ -216,3 +216,32 @@ def test_both_backends_satisfy_the_same_contract():
 
     assert robot_backend.conforms(simulated)
     assert robot_backend.conforms(hardware)
+
+
+def test_hovering_on_hardware_stops_above_the_object():
+    """With no rendered scene to draw a marker into, the arm does the pointing.
+
+    It must stop short of the object: this is how the operator checks the machine
+    understood them, and it happens before anything is confirmed.
+    """
+    arm, controller = make_controller()
+    result, _ = drain(controller.hover_over_steps(0.75, -0.45))
+
+    assert result is True
+    assert arm.waypoints, "hovering commanded no motion"
+    lowest = min(waypoint[2] for waypoint in arm.waypoints)
+    table = controller.transform.to_robot([0.75, -0.45, controller.transform.origin[2]])
+    assert lowest > table[2], "the arm descended to the object instead of over it"
+    assert arm.gripper == [], "pointing must not open or close the gripper"
+
+
+def test_hovering_respects_a_stop_like_any_other_motion():
+    arm, controller = make_controller()
+    runner = controller.hover_over_steps(0.75, 0.03)
+    assert advance(runner, 2)
+    sent = len(arm.waypoints)
+    controller.safety.emergency_stop()
+
+    result, _ = drain(runner)
+    assert result is False
+    assert len(arm.waypoints) == sent
