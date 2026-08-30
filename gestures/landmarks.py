@@ -6,12 +6,14 @@ import time
 
 import mediapipe as mp
 
+from config import HAND_LANDMARKER_TASK
+
 
 class HandLandmarkProvider:
     """Provide a single MediaPipe landmark provider and keep a shared latest frame state."""
 
     def __init__(self, model_asset_path=None, num_hands=1):
-        self.model_asset_path = model_asset_path or "hand_landmarker.task"
+        self.model_asset_path = model_asset_path or HAND_LANDMARKER_TASK
         self.num_hands = num_hands
 
         self.latest_landmarks = np.zeros(63, dtype=np.float32)

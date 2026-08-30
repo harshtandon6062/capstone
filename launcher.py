@@ -14,10 +14,12 @@ import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 
+from config import GESTURE_CLASSES, GESTURE_MODEL, HAND_LANDMARKER_TASK
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-model = tf.keras.models.load_model(os.path.join(SCRIPT_DIR, "gesture_landmark_model.h5"))
-classes = np.load(os.path.join(SCRIPT_DIR, "classes.npy"))
+model = tf.keras.models.load_model(GESTURE_MODEL)
+classes = np.load(GESTURE_CLASSES)
 print(f"Loaded dynamic gesture model. Classes: {list(classes)}")
 
 BaseOptions = mp.tasks.BaseOptions
@@ -44,7 +46,7 @@ def handle_result(result, output_image, timestamp_ms):
 
 
 lm_options = HandLandmarkerOptions(
-    base_options=BaseOptions(model_asset_path=os.path.join(SCRIPT_DIR, "hand_landmarker.task")),
+    base_options=BaseOptions(model_asset_path=HAND_LANDMARKER_TASK),
     running_mode=VisionRunningMode.LIVE_STREAM,
     result_callback=handle_result,
     num_hands=1,

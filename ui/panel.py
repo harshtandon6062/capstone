@@ -11,7 +11,7 @@ the warning attached to an action that cannot be undone.
 import cv2
 import numpy as np
 
-from ui_text import text, text_width
+from ui.text import text, text_width
 
 PANEL_WIDTH = 640
 PANEL_HEIGHT = 305

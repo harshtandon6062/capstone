@@ -5,7 +5,7 @@ panel shows what is selected, and a Kuka IIWA arm with a WSG50 gripper moves,
 pours and mixes colour-coded test tubes in a PyBullet simulation.
 
 The same command interface drives a real **Niryo Ned 2** through
-[niryo_backend.py](niryo_backend.py).
+[robot/niryo.py](robot/niryo.py).
 
 The project is about the interaction, not the arm: how an operator selects a real
 physical object without ambiguity, how the system asks for confirmation in
@@ -117,29 +117,75 @@ MediaPipe far more reliable on blue nitrile lab gloves.
 
 ## Repository layout
 
+```
+capstone/
+├── launcher.py            entry point — task selection
+├── main.py                the task loop
+├── config.py              every tunable number, and where the models live
+├── requirements.txt
+├── pytest.ini
+│
+├── robot/                 the arm
+│   ├── backend.py         the contract any arm must satisfy
+│   ├── controller.py      PyBullet Kuka IIWA + WSG50
+│   ├── niryo.py           Niryo Ned 2 driver
+│   └── safety.py          pause, emergency stop, the motion gate
+│
+├── workspace/             what is on the bench
+│   ├── registry.py        identity, contents, occupancy
+│   └── perception.py      where that knowledge comes from
+│
+├── gestures/              reading the operator
+│   ├── landmarks.py       MediaPipe hand landmarks
+│   ├── static.py          pinch, thumbs up, pointing
+│   ├── controller.py      debouncing raw classifications into events
+│   └── model_loader.py    the LSTM
+│
+├── ui/                    what the operator sees
+│   ├── panel.py           the operator panel
+│   └── text.py            cached TrueType rendering
+│
+├── commands/              what the operator asked for
+│   ├── base_command.py    interface, including the stepped form
+│   ├── command_mapper.py  builds the right command for a choice
+│   ├── command_invoker.py runs them
+│   ├── command_history.py undo stack
+│   ├── pick_place_command.py
+│   ├── pour_command.py
+│   └── mix_command.py
+│
+├── models/                trained weights and MediaPipe assets
+├── assets/fonts/          Noto Sans, bundled
+└── tests/                 126 tests
+```
+
+The four packages split along the lines the system already thought in: an arm, a
+bench, an operator, and the actions between them. `config.py` and the two entry
+points stay at the root because they are what you run and what you tune.
+
 ### Application
 
 | File | What it is |
 |---|---|
 | [launcher.py](launcher.py) | Entry point — dynamic gesture recognition and task selection |
 | [main.py](main.py) | The task loop: perception, state machine, motion driving, rendering |
-| [config.py](config.py) | Every tunable number and the action table, in one place |
+| [config.py](config.py) | Every tunable number, the action table, and where the model files live |
 
 ### Robot
 
 | File | What it is |
 |---|---|
-| [robot_backend.py](robot_backend.py) | The contract any arm must satisfy, simulated or real |
-| [robot_controller.py](robot_controller.py) | PyBullet Kuka IIWA + WSG50 implementation |
-| [niryo_backend.py](niryo_backend.py) | Niryo Ned 2 driver — ⚠️ not yet verified against hardware |
-| [safety_controller.py](safety_controller.py) | Pause, emergency stop, and the gate every motion step passes |
+| [robot/backend.py](robot/backend.py) | The contract any arm must satisfy, simulated or real |
+| [robot/controller.py](robot/controller.py) | PyBullet Kuka IIWA + WSG50 implementation |
+| [robot/niryo.py](robot/niryo.py) | Niryo Ned 2 driver — ⚠️ not yet verified against hardware |
+| [robot/safety.py](robot/safety.py) | Pause, emergency stop, and the gate every motion step passes |
 
 ### Workspace model
 
 | File | What it is |
 |---|---|
-| [object_registry.py](object_registry.py) | What is in the workspace; the single source of colour and identity |
-| [perception.py](perception.py) | Where workspace contents come from — simulation today, a camera later |
+| [workspace/registry.py](workspace/registry.py) | What is in the workspace; the single source of colour and identity |
+| [workspace/perception.py](workspace/perception.py) | Where workspace contents come from — simulation today, a camera later |
 
 ### Commands
 
@@ -157,19 +203,19 @@ MediaPipe far more reliable on blue nitrile lab gloves.
 
 | File | What it is |
 |---|---|
-| [ui_module.py](ui_module.py) | The operator panel |
-| [ui_text.py](ui_text.py) | Cached TrueType text rendering |
+| [ui/panel.py](ui/panel.py) | The operator panel |
+| [ui/text.py](ui/text.py) | Cached TrueType text rendering |
 | [assets/fonts/](assets/fonts/) | Noto Sans, bundled so the panel looks the same everywhere |
 
 ### Gesture recognition
 
 | File | What it is |
 |---|---|
-| [gesture_module.py](gesture_module.py) | Static gestures from MediaPipe hand landmarks |
-| [gesture_controller.py](gesture_controller.py) | Turns raw classifications into debounced events |
-| [hand_landmark_provider.py](hand_landmark_provider.py) | MediaPipe HandLandmarker wrapper |
-| [model_loader.py](model_loader.py) | Loads the LSTM and its labels |
-| `gesture_landmark_model.h5`, `classes.npy`, `hand_landmarker.task` | Trained models |
+| [gestures/static.py](gestures/static.py) | Static gestures from MediaPipe hand landmarks |
+| [gestures/controller.py](gestures/controller.py) | Turns raw classifications into debounced events |
+| [gestures/landmarks.py](gestures/landmarks.py) | MediaPipe HandLandmarker wrapper |
+| [gestures/model_loader.py](gestures/model_loader.py) | Loads the LSTM and its labels |
+| [models/](models/) | `gesture_landmark_model.h5`, `classes.npy`, `hand_landmarker.task` |
 
 ---
 
@@ -262,7 +308,7 @@ wrong referent is still the wrong action.
 
 On a real bench there is no rendered scene to draw a marker into, so the arm
 itself does the pointing — `hover_over_steps()` is part of the
-[robot_backend.py](robot_backend.py) contract and both controllers implement it.
+[robot/backend.py](robot/backend.py) contract and both controllers implement it.
 Set `HOVER_OVER_SELECTION = False` to turn it off.
 
 ### What can be selected, and when
@@ -428,22 +474,22 @@ stays slow enough to be a decision.
 
 ```bash
 pip install pytest
-python -m pytest -q          # 120 passing
+python -m pytest -q          # 126 passing
 ```
 
 | File | Covers |
 |---|---|
-| `test_object_registry.py` | identity vs contents, occupancy, selectability |
-| `test_robot_controller.py` | grasp validation, centring, motion generators |
-| `test_safety_controller.py` | pause, latched stop, holding pose |
-| `test_motion_interrupt.py` | that a stop actually interrupts a running motion |
-| `test_pour.py` | aim, clearance, contents transfer |
-| `test_commands.py` | undo, history clearing, failure states |
-| `test_gesture_integration.py` | gesture events, action target declarations |
-| `test_gesture_direction.py` | left/right mapping |
-| `test_launcher_flow.py` | task dispatch |
-| `test_ui_module.py` | every panel state renders, clips and anti-aliases |
-| `test_niryo_backend.py` | waypoint segmentation, transform, stop behaviour |
+| `tests/test_object_registry.py` | identity vs contents, occupancy, selectability |
+| `tests/test_robot_controller.py` | grasp validation, centring, motion generators |
+| `tests/test_safety_controller.py` | pause, latched stop, holding pose |
+| `tests/test_motion_interrupt.py` | that a stop actually interrupts a running motion |
+| `tests/test_pour.py` | aim, clearance, contents transfer |
+| `tests/test_commands.py` | undo, history clearing, failure states |
+| `tests/test_gesture_integration.py` | gesture events, action target declarations |
+| `tests/test_gesture_direction.py` | left/right mapping |
+| `tests/test_launcher_flow.py` | task dispatch |
+| `tests/test_ui_module.py` | every panel state renders, clips and anti-aliases |
+| `tests/test_niryo_backend.py` | waypoint segmentation, transform, stop behaviour |
 
 ---
 
@@ -476,7 +522,7 @@ far enough to matter.
 
 ## Running on a real Niryo Ned 2
 
-[niryo_backend.py](niryo_backend.py) implements the same interface as the
+[robot/niryo.py](robot/niryo.py) implements the same interface as the
 simulated controller, so commands, the state machine and the UI do not change.
 It is **written but not yet verified against hardware** — built against the
 pyniryo 1.2.5 API read from source, with no arm attached.
@@ -507,7 +553,7 @@ asked, but it will finish the segment already in flight.
 
 ## Deferred: YOLO perception
 
-[perception.py](perception.py) already isolates where workspace contents come
+[workspace/perception.py](workspace/perception.py) already isolates where workspace contents come
 from, so a detector drops in without touching anything above it. It has been left
 out on purpose:
 

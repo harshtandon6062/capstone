@@ -11,8 +11,8 @@ Two rules matter most here and both were bugs before:
 
 import pytest
 
-from object_registry import EMPTY_LIQUID_RGBA, ObjectRegistry, mix_colors, rgba_to_bgr
-from perception import StaticPerception
+from workspace.registry import EMPTY_LIQUID_RGBA, ObjectRegistry, mix_colors, rgba_to_bgr
+from workspace.perception import StaticPerception
 
 
 def build_registry(source_count=3, destination_count=3, source_positions=None):

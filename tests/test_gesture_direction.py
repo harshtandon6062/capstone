@@ -5,7 +5,7 @@ operator's right. These tests pin that convention down, because it silently
 inverted when the second flip was removed during the refactor.
 """
 
-from gesture_module import GestureDetector
+from gestures.static import GestureDetector
 
 
 class Landmark:

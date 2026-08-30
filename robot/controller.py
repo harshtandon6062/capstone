@@ -17,7 +17,7 @@ from config import (
     TEST_TUBE_HEIGHT,
     TEST_TUBE_RADIUS,
 )
-from safety_controller import EmergencyStopError, SafetyState
+from robot.safety import EmergencyStopError, SafetyState
 
 
 class RobotController:

@@ -8,9 +8,9 @@ drawing code could blank the panel and every other test would still pass.
 import numpy as np
 import pytest
 
-import ui_module
-import ui_text
-from ui_module import PANEL_HEIGHT, PANEL_WIDTH, draw_ui
+import ui.panel as ui_module
+import ui.text as ui_text
+from ui.panel import PANEL_HEIGHT, PANEL_WIDTH, draw_ui
 
 
 class FakeObject:

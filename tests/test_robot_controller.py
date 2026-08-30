@@ -1,8 +1,8 @@
 """Motion-shape tests for RobotController. No simulator required."""
 
 from config import HOVER_Z, LIFT_Z
-from robot_controller import RobotController
-from safety_controller import SafetyController
+from robot.controller import RobotController
+from robot.safety import SafetyController
 
 
 class RecordingPhysics:

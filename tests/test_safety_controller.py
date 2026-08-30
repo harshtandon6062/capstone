@@ -1,6 +1,6 @@
 import pytest
 
-from safety_controller import EmergencyStopError, SafetyController, SafetyState
+from robot.safety import EmergencyStopError, SafetyController, SafetyState
 
 
 class FakePhysics:

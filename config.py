@@ -1,5 +1,18 @@
 """Configuration for the current PyBullet pick-and-place application."""
 
+import os
+
+# Resolved from this file's location rather than the working directory. The
+# defaults used to be bare filenames, which only worked because the entry points
+# chdir'd to the repository root first - so importing a module from anywhere else
+# silently failed to find its model.
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(REPO_ROOT, "models")
+
+HAND_LANDMARKER_TASK = os.path.join(MODELS_DIR, "hand_landmarker.task")
+GESTURE_MODEL = os.path.join(MODELS_DIR, "gesture_landmark_model.h5")
+GESTURE_CLASSES = os.path.join(MODELS_DIR, "classes.npy")
+
 TABLE_BASE_POSITION = [1.0, -0.2, 0.0]
 TABLE_BASE_ORIENTATION = [0, 0, 0.7071, 0.7071]
 

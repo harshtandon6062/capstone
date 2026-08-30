@@ -10,7 +10,7 @@ import pytest
 
 from config import GRAB_Z
 from commands import CommandInvoker, PickPlaceCommand
-from safety_controller import EmergencyStopError
+from robot.safety import EmergencyStopError
 from test_robot_controller import make_controller
 
 

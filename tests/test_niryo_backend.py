@@ -11,17 +11,17 @@ import math
 
 import pytest
 
-import robot_backend
-from niryo_backend import (
+import robot.backend as robot_backend
+from robot.niryo import (
     SEGMENT_LENGTH,
     BlockingCall,
     NiryoArmController,
     WorkspaceTransform,
 )
-from object_registry import ObjectRegistry
-from perception import StaticPerception
-from robot_controller import RobotController
-from safety_controller import SafetyController
+from workspace.registry import ObjectRegistry
+from workspace.perception import StaticPerception
+from robot.controller import RobotController
+from robot.safety import SafetyController
 from test_robot_controller import RecordingPhysics
 
 

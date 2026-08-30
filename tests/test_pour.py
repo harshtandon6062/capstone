@@ -7,8 +7,8 @@ the history under it, and it changes the workspace irreversibly.
 """
 
 from commands import CommandInvoker, PickPlaceCommand, PourCommand
-from object_registry import EMPTY_LIQUID_RGBA, ObjectRegistry, mix_colors
-from perception import StaticPerception
+from workspace.registry import EMPTY_LIQUID_RGBA, ObjectRegistry, mix_colors
+from workspace.perception import StaticPerception
 
 
 def observation(handle, name, rgba, kind="source"):

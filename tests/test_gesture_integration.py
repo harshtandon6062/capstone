@@ -1,5 +1,5 @@
-from gesture_controller import GestureController
-from hand_landmark_provider import HandLandmarkProvider
+from gestures.controller import GestureController
+from gestures.landmarks import HandLandmarkProvider
 from config import (ACTIONS, GESTURE_COOLDOWN, GESTURE_HOLD_DURATION,
                     action_is_irreversible, action_needs_target)
 

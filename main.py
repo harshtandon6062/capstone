@@ -19,15 +19,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 # gesture_module is imported lazily inside run_pick_and_place()
 # because it creates a HandLandmarker at import time and needs CWD set first
 
-from ui_module import (ACCENT, DANGER, OK, PANEL_HEIGHT, PANEL_WIDTH,
+from ui.panel import (ACCENT, DANGER, OK, PANEL_HEIGHT, PANEL_WIDTH,
                        TEXT_BRIGHT, draw_ui)
-from ui_text import text as draw_text
-from safety_controller import EmergencyStopError, SafetyController, SafetyState
-from robot_controller import RobotController
+from ui.text import text as draw_text
+from robot.safety import EmergencyStopError, SafetyController, SafetyState
+from robot.controller import RobotController
 from commands import CommandInvoker, CommandMapper
-from object_registry import ObjectRegistry
-from perception import SimulatedPerception
+from workspace.registry import ObjectRegistry
+from workspace.perception import SimulatedPerception
 from config import (
+    GESTURE_CLASSES,
+    GESTURE_MODEL,
+    HAND_LANDMARKER_TASK,
     CUBE_COLOR_NAMES,
     DESTINATION_SPOT_COLOR_NAMES,
     STATUS_MESSAGE_DURATION,
@@ -257,22 +260,22 @@ def run_pick_and_place(initial_action="move"):
 
     try:
         print("[START] gesture modules", flush=True)
-        from gesture_controller import GestureController
-        from gesture_module import detect_gesture
-        from hand_landmark_provider import HandLandmarkProvider
+        from gestures.controller import GestureController
+        from gestures.static import detect_gesture
+        from gestures.landmarks import HandLandmarkProvider
         print("[OK] gesture modules", flush=True)
 
         print("[START] landmark provider", flush=True)
         landmark_provider = HandLandmarkProvider(
-            model_asset_path=os.path.join(script_dir, "hand_landmarker.task")
+            model_asset_path=HAND_LANDMARKER_TASK
         )
         print("[OK] landmark provider", flush=True)
 
         print("[START] gesture model", flush=True)
-        from model_loader import load_gesture_model
+        from gestures.model_loader import load_gesture_model
 
-        dynamic_model = load_gesture_model(os.path.join(script_dir, "gesture_landmark_model.h5"))
-        dynamic_classes = np.load(os.path.join(script_dir, "classes.npy"))
+        dynamic_model = load_gesture_model(GESTURE_MODEL)
+        dynamic_classes = np.load(GESTURE_CLASSES)
         dynamic_gesture_controller = GestureController(
             dynamic_classes=list(dynamic_classes), cooldown=0.35
         )
