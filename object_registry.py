@@ -21,6 +21,15 @@ def rgba_to_bgr(rgba):
     )
 
 
+# What a tube looks like once its contents have been poured out.
+EMPTY_LIQUID_RGBA = [0.82, 0.82, 0.84, 1.0]
+
+
+def mix_colors(first, second):
+    """Blend two liquids. Crude on purpose - it only has to be visibly neither."""
+    return [(a + b) / 2 for a, b in zip(first[:3], second[:3])] + [1.0]
+
+
 @dataclass
 class SceneObject:
     """One thing in the workspace that the operator can refer to."""
@@ -32,6 +41,9 @@ class SceneObject:
     position: list
     kind: str
     consumed: bool = False
+    # Overrides the row's generic "used" caption, so an emptied tube reads as
+    # empty rather than as one that has been moved.
+    consumed_caption: str = None
 
     @property
     def color_bgr(self):
@@ -104,7 +116,7 @@ class ObjectRegistry:
 
     # ── navigation ─────────────────────────────────────────────
 
-    def next_available(self, kind, current_handle, step):
+    def next_available(self, kind, current_handle, step, exclude=None):
         """Return the next selectable object's handle, or None if there are none.
 
         Always terminates: it inspects each object at most once. Returning None
@@ -122,13 +134,13 @@ class ObjectRegistry:
         count = len(objects)
         for offset in range(1, count + 1):
             candidate = objects[(start + step * offset) % count]
-            if candidate.available:
+            if candidate.available and candidate.handle != exclude:
                 return candidate.handle
         return None
 
-    def first_available(self, kind):
+    def first_available(self, kind, exclude=None):
         for obj in self.all(kind):
-            if obj.available:
+            if obj.available and obj.handle != exclude:
                 return obj.handle
         return None
 
@@ -145,6 +157,28 @@ class ObjectRegistry:
         if obj is not None:
             obj.consumed = False
         return obj
+
+    def transfer_contents(self, source_handle, target_handle):
+        """Pour one tube into another. Returns (source, target), or None.
+
+        The source ends up empty and unusable; the target ends up holding
+        something that is neither of the two originals. There is deliberately no
+        inverse of this method - that is the whole point of the action.
+        """
+        source = self._objects.get(source_handle)
+        target = self._objects.get(target_handle)
+        if source is None or target is None or source is target:
+            return None
+
+        target.color_rgba = mix_colors(source.color_rgba, target.color_rgba)
+        target.color_name = "MIXED"
+        target.label = f"Mixed tube"
+        source.color_rgba = list(EMPTY_LIQUID_RGBA)
+        source.color_name = "EMPTY"
+        source.label = f"Empty tube"
+        source.consumed = True
+        source.consumed_caption = "empty"
+        return source, target
 
     def reset(self):
         for obj in self._objects.values():

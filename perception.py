@@ -63,6 +63,18 @@ class SimulatedPerception:
             }
         )
 
+    def set_source_color(self, handle, color_rgba, label=None, color_name=None):
+        """Record that an object's contents changed, so later detections agree."""
+        for entry in self._sources:
+            if entry["handle"] == handle:
+                entry["color_rgba"] = list(color_rgba)
+                if label is not None:
+                    entry["label"] = label
+                if color_name is not None:
+                    entry["color_name"] = color_name
+                return entry
+        return None
+
     def detect(self):
         observations = []
 

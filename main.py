@@ -42,6 +42,8 @@ from config import (
     NAVIGATION_HOLD_DURATION,
     DYNAMIC_PREDICT_EVERY,
     MOTION_STEPS_PER_FRAME,
+    ACTIONS,
+    IRREVERSIBLE_HOLD_DURATION,
     GRAB_Z,
     GRIPPER_BASE_ORIENTATION,
     GRIPPER_BASE_POSITION,
@@ -413,6 +415,10 @@ def run_pick_and_place():
     # A motion an emergency stop interrupted. It stays suspended, still gripping,
     # until the operator clears the stop and the arm can set the sample down.
     interrupted_motion = None
+    # Which action the operator picked for this tube, and where they are in the
+    # action list while choosing.
+    pending_action = None
+    action_index = 0
     frame_index = 0
     hold_progress = 0.0
 
@@ -432,7 +438,34 @@ def run_pick_and_place():
         return False, None
 
     def selection_kind():
-        return "source" if system_state in ("SELECT_SOURCE", "CONFIRM_SOURCE") else "destination"
+        if system_state in ("SELECT_SOURCE", "CONFIRM_SOURCE"):
+            return "source"
+        # A pour goes into another tube, not onto a spot.
+        return "source" if pending_action == "pour" else "destination"
+
+    def selection_exclude():
+        """A tube cannot be poured into itself."""
+        return source_handle if pending_action == "pour" else None
+
+    def transfer_contents(from_handle, into_handle):
+        """Apply a completed pour to the workspace.
+
+        The registry decides what mixing means; this only makes the simulation
+        and the perception source agree with it, so the panel and the scene keep
+        showing the same thing.
+        """
+        changed = registry.transfer_contents(from_handle, into_handle)
+        if changed is None:
+            return
+        emptied, mixed = changed
+        for obj in (emptied, mixed):
+            perception.set_source_color(obj.handle, obj.color_rgba, obj.label,
+                                        obj.color_name)
+            p.changeVisualShape(obj.handle, -1, rgbaColor=obj.color_rgba)
+        p.changeVisualShape(mixed.handle, 0,
+                            rgbaColor=[c * 0.75 for c in mixed.color_rgba[:3]] + [1.0])
+        # An emptied tube shows no liquid at all.
+        p.changeVisualShape(emptied.handle, 0, rgbaColor=[1.0, 1.0, 1.0, 0.0])
 
     def release_placement(command):
         """Return the tube and spot a command consumed back to the available pool."""
@@ -446,6 +479,7 @@ def run_pick_and_place():
     print("=" * 50)
     print("PICK AND PLACE MODE")
     print("Point L/R to navigate, Pinch to select")
+    print("Actions: MOVE (undoable) and POUR (cannot be undone)")
     print("Arrow keys + Enter for keyboard | R=reset | B=glove | Q=back")
     print("=" * 50)
 
@@ -530,8 +564,14 @@ def run_pick_and_place():
         # Navigating is free to undo, so it fires quickly. Confirming a
         # destination starts the robot, so it stays a deliberate hold.
         committing = system_state == "CONFIRM_DEST" and gesture == "thumbs_up"
-        required_hold = gesture_hold_duration if committing else NAVIGATION_HOLD_DURATION
-        required_cooldown = gesture_cooldown if committing else NAVIGATION_COOLDOWN
+        irreversible = pending_action == "pour"
+        if committing:
+            required_hold = (IRREVERSIBLE_HOLD_DURATION if irreversible
+                             else gesture_hold_duration)
+            required_cooldown = gesture_cooldown
+        else:
+            required_hold = NAVIGATION_HOLD_DURATION
+            required_cooldown = NAVIGATION_COOLDOWN
 
         hold_elapsed = 0.0 if hold_start_time is None else now - hold_start_time
         hold_progress = min(1.0, hold_elapsed / required_hold) if required_hold else 1.0
@@ -559,6 +599,7 @@ def run_pick_and_place():
             system_state = "SELECT_SOURCE"
             source_handle = None
             dest_handle = None
+            pending_action = None
             selected_handle = registry.first_available("source")
 
         # Once the stop is cleared, put down whatever the interrupted motion was
@@ -600,7 +641,9 @@ def run_pick_and_place():
                 if gesture in ("point_right", "point_left"):
                     step = 1 if gesture == "point_right" else -1
                     # Returns None when nothing is left; it never spins.
-                    next_handle = registry.next_available(kind, selected_handle, step)
+                    next_handle = registry.next_available(
+                        kind, selected_handle, step, exclude=selection_exclude()
+                    )
                     if next_handle is None:
                         set_status(f"NO {kind.upper()}S LEFT")
                     else:
@@ -620,8 +663,9 @@ def run_pick_and_place():
 
             elif system_state == "CONFIRM_SOURCE":
                 if gesture == "thumbs_up":
-                    system_state = "SELECT_DEST"
-                    selected_handle = registry.first_available("destination")
+                    system_state = "SELECT_ACTION"
+                    action_index = 0
+                    pending_action = None
                     chosen = registry.by_handle(source_handle)
                     print(f"Source CONFIRMED: {chosen.label if chosen else source_handle}")
                     last_gesture_time = now
@@ -629,6 +673,31 @@ def run_pick_and_place():
                     system_state = "SELECT_SOURCE"
                     source_handle = None
                     print("Source cancelled — re-select")
+                    last_gesture_time = now
+
+            elif system_state == "SELECT_ACTION":
+                if gesture in ("point_right", "point_left"):
+                    step = 1 if gesture == "point_right" else -1
+                    action_index = (action_index + step) % len(ACTIONS)
+                    last_gesture_time = now
+                elif gesture == "pinch":
+                    pending_action = ACTIONS[action_index]["key"]
+                    system_state = "SELECT_DEST"
+                    selected_handle = registry.first_available(
+                        selection_kind(), exclude=selection_exclude()
+                    )
+                    if selected_handle is None:
+                        set_status("NO TARGETS LEFT")
+                        system_state = "SELECT_ACTION"
+                        pending_action = None
+                    else:
+                        print(f"Action chosen: {ACTIONS[action_index]['label']}")
+                    last_gesture_time = now
+                elif gesture == "thumb_left":
+                    system_state = "SELECT_SOURCE"
+                    source_handle = None
+                    pending_action = None
+                    print("Cancelled — re-select a tube")
                     last_gesture_time = now
 
             elif system_state == "CONFIRM_DEST":
@@ -651,14 +720,24 @@ def run_pick_and_place():
         if (system_state == "EXECUTING"
                 and active_motion is None
                 and dest_handle is not None):
-            destination = registry.by_handle(dest_handle)
-            command = command_mapper.pick_and_place(
-                source_handle,
-                list(destination.position),
-            )
+            if pending_action == "pour":
+                origin = registry.by_handle(source_handle)
+                command = command_mapper.pour(
+                    source_handle,
+                    dest_handle,
+                    list(origin.position),
+                    transfer_contents,
+                )
+                active_kind = "pour"
+            else:
+                destination = registry.by_handle(dest_handle)
+                command = command_mapper.pick_and_place(
+                    source_handle,
+                    list(destination.position),
+                )
+                active_kind = "move"
             motion_source, motion_dest = source_handle, dest_handle
             active_motion = command_invoker.execute_steps(command)
-            active_kind = "move"
 
         if active_motion is not None:
             if safety.state is SafetyState.RUNNING:
@@ -677,6 +756,10 @@ def run_pick_and_place():
                             set_status("PLACED")
                         else:
                             set_status("MOVE FAILED")
+                    elif active_kind == "pour":
+                        # transfer_contents already emptied the source and mixed
+                        # the target; the target tube stays usable.
+                        set_status("POURED" if result else "POUR FAILED")
                     elif active_kind == "undo":
                         if result:
                             release_placement(command_invoker.last_undone_command)
@@ -693,6 +776,7 @@ def run_pick_and_place():
                     system_state = "SELECT_SOURCE"
                     source_handle = None
                     dest_handle = None
+                    pending_action = None
                     selected_handle = registry.first_available("source")
         else:
             # Never block here: the camera and gesture pipeline must keep running
@@ -738,6 +822,9 @@ def run_pick_and_place():
             command_invoker.can_undo,
             status_message,
             hold_progress,
+            ACTIONS,
+            action_index,
+            pending_action,
         )
         if camera_connected:
             cv2.imshow("Webcam", frame)
@@ -767,6 +854,7 @@ def run_pick_and_place():
             system_state = "SELECT_SOURCE"
             source_handle = None
             dest_handle = None
+            pending_action = None
             selected_handle = registry.first_available("source")
             set_status("SCENE RESET")
             for _ in range(240):
@@ -788,19 +876,40 @@ def run_pick_and_place():
             if system_state == "CONFIRM_SOURCE":
                 system_state = "SELECT_SOURCE"
                 source_handle = None
+            elif system_state == "SELECT_ACTION":
+                system_state = "SELECT_SOURCE"
+                source_handle = None
+                pending_action = None
             elif system_state == "CONFIRM_DEST":
                 system_state = "SELECT_DEST"
                 dest_handle = None
+        elif system_state == "SELECT_ACTION" and active_motion is None:
+            if key == 83 or key == ord('d'):
+                action_index = (action_index + 1) % len(ACTIONS)
+            elif key == 81 or key == ord('a'):
+                action_index = (action_index - 1) % len(ACTIONS)
+            elif key == 13 or key == ord(' '):
+                pending_action = ACTIONS[action_index]["key"]
+                system_state = "SELECT_DEST"
+                selected_handle = registry.first_available(
+                    selection_kind(), exclude=selection_exclude()
+                )
+                if selected_handle is None:
+                    set_status("NO TARGETS LEFT")
+                    system_state = "SELECT_ACTION"
+                    pending_action = None
         elif system_state in ("SELECT_SOURCE", "SELECT_DEST") and active_motion is None:
             kind = selection_kind()
             if key == 83 or key == ord('d'):
-                nxt = registry.next_available(kind, selected_handle, 1)
+                nxt = registry.next_available(kind, selected_handle, 1,
+                                              exclude=selection_exclude())
                 if nxt is None:
                     set_status(f"NO {kind.upper()}S LEFT")
                 else:
                     selected_handle = nxt
             elif key == 81 or key == ord('a'):
-                nxt = registry.next_available(kind, selected_handle, -1)
+                nxt = registry.next_available(kind, selected_handle, -1,
+                                              exclude=selection_exclude())
                 if nxt is None:
                     set_status(f"NO {kind.upper()}S LEFT")
                 else:
@@ -817,8 +926,9 @@ def run_pick_and_place():
         elif system_state in ("CONFIRM_SOURCE", "CONFIRM_DEST") and active_motion is None:
             if key == 13 or key == ord(' '):  # enter = confirm (like thumbs_up)
                 if system_state == "CONFIRM_SOURCE":
-                    system_state = "SELECT_DEST"
-                    selected_handle = registry.first_available("destination")
+                    system_state = "SELECT_ACTION"
+                    action_index = 0
+                    pending_action = None
                 elif system_state == "CONFIRM_DEST":
                     system_state = "EXECUTING"
 

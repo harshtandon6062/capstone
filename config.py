@@ -91,6 +91,29 @@ STATUS_MESSAGE_DURATION = 2.5
 GRASP_TOLERANCE = 0.03
 
 TARGET_EULER = [0, 1.01 * 3.141592653589793, 0]
+
+# Pouring. This is deliberately not a fluid simulation - the point of the action
+# is that it cannot be undone, not that it models a liquid. The arm tips the tube
+# over the target, holds, and the contents transfer.
+# Applied as roll. The wrist's pitch range is limited by the URDF and saturates
+# around 60 degrees of actual tube tilt; rolling reaches 94, which is past
+# horizontal and is what pouring actually looks like.
+POUR_TILT_RADIANS = 1.6
+POUR_Z = 1.09
+POUR_HOLD_STEPS = 150
+# Height of the tilted tube's mouth above the rim of the tube being poured into.
+POUR_CLEARANCE = 0.09
+
+# An irreversible action gets a longer, more deliberate confirmation than one
+# that can be undone. Same interface, different cost of being wrong.
+IRREVERSIBLE_HOLD_DURATION = 2.0
+
+# What the operator can ask the robot to do. "reversible" drives both the undo
+# offer and how long the confirming hold has to be held.
+ACTIONS = [
+    {"key": "move", "label": "MOVE", "hint": "place on a spot", "reversible": True},
+    {"key": "pour", "label": "POUR", "hint": "into another tube", "reversible": False},
+]
 HOVER_Z = 0.97
 GRAB_Z = 0.97
 LIFT_Z = 1.15

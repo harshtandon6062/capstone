@@ -1,4 +1,5 @@
 from .pick_place_command import PickPlaceCommand
+from .pour_command import PourCommand
 
 
 class CommandMapper:
@@ -9,3 +10,12 @@ class CommandMapper:
 
     def pick_and_place(self, source_object, destination):
         return PickPlaceCommand(source_object, destination, self.robot_controller)
+
+    def pour(self, source_object, target_object, return_position, transfer):
+        return PourCommand(
+            source_object,
+            target_object,
+            return_position,
+            self.robot_controller,
+            transfer,
+        )

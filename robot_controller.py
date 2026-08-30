@@ -1,7 +1,19 @@
 import math
 import time
 
-from config import GRAB_Z, GRASP_TOLERANCE, HOVER_Z, LIFT_Z, TARGET_EULER
+from config import (
+    GRAB_Z,
+    GRASP_TOLERANCE,
+    HOVER_Z,
+    LIFT_Z,
+    POUR_CLEARANCE,
+    POUR_HOLD_STEPS,
+    POUR_TILT_RADIANS,
+    POUR_Z,
+    ROBOT_BASE_POSITION,
+    TARGET_EULER,
+    TEST_TUBE_HEIGHT,
+)
 from safety_controller import EmergencyStopError, SafetyState
 
 
@@ -34,6 +46,7 @@ class RobotController:
         # an emergency stop can be abandoned without the object it was carrying
         # falling out of the gripper.
         self._held_constraint = None
+        self._held_object = None
 
     def set_safety_poll(self, safety_poll):
         self.safety_poll = safety_poll
@@ -80,11 +93,11 @@ class RobotController:
         return True
 
     # ── primitives ──────────────────────────────────────────────────────────
-    def _drive_to_steps(self, target_position, gripper_open, steps):
+    def _drive_to_steps(self, target_position, gripper_open, steps, orientation=None):
         self.safety.require_motion()
         gripper_value = 0 if gripper_open else 1
         joint_positions = self.physics.calculateInverseKinematics(
-            self.kuka_id, 6, target_position, self.target_orientation
+            self.kuka_id, 6, target_position, orientation or self.target_orientation
         )
         for joint in range(self.kuka_joint_count):
             self.physics.setJointMotorControl2(
@@ -98,7 +111,8 @@ class RobotController:
         )
         return (yield from self._step_for(steps))
 
-    def move_to_steps(self, target_position, gripper_open, steps=150, precise=False):
+    def move_to_steps(self, target_position, gripper_open, steps=150, precise=False,
+                      orientation=None):
         """Drive the tool to a target.
 
         With precise=True the move closes the loop: it measures where the tool
@@ -106,7 +120,9 @@ class RobotController:
         tolerance. Inverse kinematics plus a fixed number of position-control
         steps consistently undershoots by roughly 20 mm.
         """
-        if not (yield from self._drive_to_steps(target_position, gripper_open, steps)):
+        if not (yield from self._drive_to_steps(
+            target_position, gripper_open, steps, orientation
+        )):
             return False
         if precise:
             return (yield from self._refine_steps(target_position, gripper_open))
@@ -164,6 +180,71 @@ class RobotController:
                 return None
         return (aim_x, aim_y)
 
+    def pour_orientation_for(self, target_y, fraction=1.0):
+        """Roll the wrist so the tube's mouth swings toward the robot, not away.
+
+        Tilting throws the mouth about 0.26 m to one side, and which side depends
+        on the sign of the roll. Rolling the wrong way puts the wrist 0.26 m
+        beyond the target, which for the outermost tube is past the arm's reach -
+        the mouth then never lines up and the contents would miss it entirely.
+        """
+        sign = 1.0 if target_y < ROBOT_BASE_POSITION[1] else -1.0
+        return self.physics.getQuaternionFromEuler(
+            [
+                TARGET_EULER[0] + sign * POUR_TILT_RADIANS * fraction,
+                TARGET_EULER[1],
+                TARGET_EULER[2],
+            ]
+        )
+
+    def _tilt_in_place_steps(self, position, target_y, stages=5, steps=60):
+        """Roll the wrist over gradually, without moving it.
+
+        Commanding the full pour orientation in one move makes inverse kinematics
+        pick a noticeably different arm configuration, and position control drives
+        straight through the gap between the two - which dips the tool low enough
+        to clip the tube it is about to pour into.
+        """
+        for stage in range(1, stages + 1):
+            orientation = self.pour_orientation_for(target_y, stage / stages)
+            if not (yield from self._drive_to_steps(position, False, steps, orientation)):
+                return False
+        return True
+
+    def _untilt_in_place_steps(self, position, target_y, stages=5, steps=60):
+        """The reverse of _tilt_in_place_steps, ending upright."""
+        for stage in range(stages - 1, -1, -1):
+            orientation = self.pour_orientation_for(target_y, stage / stages)
+            if not (yield from self._drive_to_steps(position, False, steps, orientation)):
+                return False
+        return True
+
+    def center_pour_over_steps(self, mouth_target, start=None, attempts=4, steps=80,
+                               tolerance=0.012):
+        """Move the wrist until the tilted tube's mouth is over mouth_target.
+
+        Aiming the wrist itself at the target pours onto the table beside it,
+        because tilting swings the tube a long way out. Measuring the mouth and
+        correcting for the residual is the same trick center_gripper_over uses
+        for the fingers.
+        """
+        aim = list(start) if start is not None else [
+            mouth_target[0], mouth_target[1], POUR_Z
+        ]
+        for _ in range(attempts):
+            mouth = self.held_object_tip()
+            if mouth is None:
+                return None
+            error = [mouth_target[i] - mouth[i] for i in range(3)]
+            if math.sqrt(sum(e * e for e in error)) <= tolerance:
+                return aim
+            aim = [aim[i] + error[i] for i in range(3)]
+            if not (yield from self._drive_to_steps(
+                aim, False, steps, self.pour_orientation_for(mouth_target[1])
+            )):
+                return None
+        return aim
+
     def reset_robot_steps(self):
         self.safety.require_motion()
         for joint in range(self.kuka_joint_count):
@@ -200,6 +281,21 @@ class RobotController:
         right = self.physics.getLinkState(self.gripper_id, 6)[4]
         return [(a + b) / 2 for a, b in zip(left, right)]
 
+    def held_object_tip(self, length=TEST_TUBE_HEIGHT):
+        """World position of the open end of whatever is currently held.
+
+        A tube hangs roughly 280 mm below the wrist, so rolling it past
+        horizontal swings its mouth about that far sideways. Anything that needs
+        to know where the contents will actually go has to ask about the tube,
+        not about the wrist.
+        """
+        if self._held_object is None:
+            return None
+        position, orientation = self.get_object_state(self._held_object)
+        matrix = self.physics.getMatrixFromQuaternion(orientation)
+        axis = (matrix[2], matrix[5], matrix[8])
+        return [position[i] + axis[i] * length for i in range(3)]
+
     def grasp_is_valid(self, object_id, tolerance=GRASP_TOLERANCE):
         """Are the fingers actually around the object before we call this a grasp?
 
@@ -229,6 +325,7 @@ class RobotController:
             object_position,
             desired_orientation,
         )
+        self._held_object = object_id
         self._held_constraint = self.physics.createConstraint(
             self.gripper_id,
             6,
@@ -246,6 +343,8 @@ class RobotController:
         self.physics.removeConstraint(constraint_id)
         if constraint_id == self._held_constraint:
             self._held_constraint = None
+            self._held_object = None
+        self._held_object = None
 
     @property
     def is_holding(self):
@@ -337,6 +436,99 @@ class RobotController:
                 self._release_object(grasp_constraint)
         return True
 
+    def pour_steps(self, source_object, target_object, return_position):
+        """Tip one tube over another, then put the tube back where it came from.
+
+        The transfer of contents is not modelled here - this is the motion only.
+        What matters about it is that once it has happened there is no motion
+        that puts the contents back, which is why the command wrapping it refuses
+        to offer an undo.
+        """
+        source, _ = self.get_object_state(source_object)
+        target, _ = self.get_object_state(target_object)
+        mouth_target = [
+            target[0],
+            target[1],
+            target[2] + TEST_TUBE_HEIGHT + POUR_CLEARANCE,
+        ]
+        grasp_constraint = None
+        keep_holding = False
+        poured = False
+        try:
+            if not (yield from self.approach_from_above_steps(
+                source[0], source[1], True, 200
+            )):
+                return False
+            aim = yield from self.center_gripper_over_steps(source[0], source[1], True)
+            if aim is None:
+                return False
+            if not (yield from self.move_to_steps([aim[0], aim[1], GRAB_Z], False, 150)):
+                return False
+            if not self.grasp_is_valid(source_object):
+                return False
+            grasp_constraint = self._attach_object(source_object)
+            if not (yield from self.move_to_steps(
+                [source[0], source[1], LIFT_Z], False, 200
+            )):
+                return False
+            if not (yield from self._carry_steps(source, target)):
+                return False
+
+            # Tilt at clearance height, where the arc the tube swings through is
+            # well above the target, and only then bring the mouth down onto it.
+            # Tilting at pouring height sweeps the tube straight through the tube
+            # being poured into and knocks it.
+            staging = [target[0], target[1], LIFT_Z]
+            if not (yield from self._tilt_in_place_steps(staging, target[1])):
+                return False
+            pour_aim = yield from self.center_pour_over_steps(
+                mouth_target, start=staging
+            )
+            if pour_aim is None:
+                return False
+            if not (yield from self._step_for(POUR_HOLD_STEPS)):
+                return False
+            poured = True
+
+            # Come back upright the same way, for the same reason.
+            if not (yield from self._untilt_in_place_steps(
+                [pour_aim[0], pour_aim[1], LIFT_Z], target[1]
+            )):
+                return False
+            if not (yield from self._carry_steps(pour_aim, return_position)):
+                return False
+            drop = yield from self.center_gripper_over_steps(
+                return_position[0], return_position[1], False
+            )
+            if drop is None:
+                return False
+            if not (yield from self.move_to_steps([drop[0], drop[1], GRAB_Z], False, 200)):
+                return False
+            if not (yield from self.move_to_steps([drop[0], drop[1], GRAB_Z], True, 100)):
+                return False
+            self._release_object(grasp_constraint)
+            grasp_constraint = None
+            if not (yield from self.move_to_steps(
+                [return_position[0], return_position[1], HOVER_Z], True, 100
+            )):
+                return False
+            if not (yield from self.reset_robot_steps()):
+                return False
+        except EmergencyStopError:
+            keep_holding = True
+            raise
+        finally:
+            if (grasp_constraint is not None
+                    and self._held_constraint == grasp_constraint
+                    and not keep_holding):
+                self._release_object(grasp_constraint)
+        return poured
+
+    def pour(self, source_object, target_object, return_position):
+        return self._drain(
+            self.pour_steps(source_object, target_object, return_position)
+        )
+
     def reverse_pick_and_place_steps(self, source_object, saved_position,
                                      saved_orientation):
         """Physically carry an object from its current location back to its saved pose."""
@@ -391,9 +583,10 @@ class RobotController:
                 self._release_object(grasp_constraint)
 
     # ── blocking forms, for tests and one-shot setup ────────────────────────
-    def move_to(self, target_position, gripper_open, steps=150, precise=False):
+    def move_to(self, target_position, gripper_open, steps=150, precise=False,
+                orientation=None):
         return self._drain(
-            self.move_to_steps(target_position, gripper_open, steps, precise)
+            self.move_to_steps(target_position, gripper_open, steps, precise, orientation)
         )
 
     def approach_from_above(self, x, y, gripper_open, steps=150):

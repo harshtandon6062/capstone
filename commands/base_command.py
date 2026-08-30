@@ -26,11 +26,10 @@ class Command(ABC):
     def undo_steps(self):
         """Generator form of undo(). Returns the same True/False."""
 
-    @property
-    def reversible(self):
-        """Whether undo() can put the world back the way it was.
+    # Whether undo() can put the world back the way it was. Pick-and-place can.
+    # Anything that mixes or transfers a sample cannot, and the operator has to
+    # be told that before they commit, not after.
+    reversible = True
 
-        Pick-and-place can. Anything that mixes or transfers a sample cannot, and
-        the operator has to be told that before they commit, not after.
-        """
-        return True
+    # Shown to the operator when confirming.
+    description = "Action"

@@ -3,5 +3,6 @@ from .command_history import CommandHistory
 from .command_invoker import CommandInvoker
 from .command_mapper import CommandMapper
 from .pick_place_command import PickPlaceCommand
+from .pour_command import PourCommand
 
-__all__ = ["Command", "CommandHistory", "CommandInvoker", "CommandMapper", "PickPlaceCommand"]
+__all__ = ["Command", "CommandHistory", "CommandInvoker", "CommandMapper", "PickPlaceCommand", "PourCommand"]
