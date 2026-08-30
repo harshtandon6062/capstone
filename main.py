@@ -25,7 +25,7 @@ from ui_text import text as draw_text
 from safety_controller import EmergencyStopError, SafetyController, SafetyState
 from robot_controller import RobotController
 from commands import CommandInvoker, CommandMapper
-from object_registry import ObjectRegistry
+from object_registry import ObjectRegistry, mix_colors
 from perception import SimulatedPerception
 from config import (
     CUBE_COLOR_NAMES,
@@ -508,6 +508,7 @@ def run_pick_and_place(initial_action="move"):
             blocked["move"] = "spots full"
         if source is None or source.empty:
             blocked["pour"] = "tube is empty"
+            blocked["mix"] = "tube is empty"
         elif not registry.can_pour(source_handle):
             blocked["pour"] = "no other tube"
         return blocked
@@ -579,6 +580,15 @@ def run_pick_and_place(initial_action="move"):
             return
         for obj in changed:
             apply_appearance(obj)
+
+    def mix_contents(source_handle):
+        """Apply a completed mix to the workspace."""
+        source = registry.by_handle(source_handle)
+        if source is None or source.empty:
+            return
+        source.color_rgba = mix_colors(source.color_rgba, source.color_rgba)
+        source.contents_name = "MIXED"
+        apply_appearance(source)
 
     print("[START] application loop", flush=True)
     print("=" * 50)
@@ -656,6 +666,20 @@ def run_pick_and_place(initial_action="move"):
 
         if command is not None:
             print(f"Gesture command -> {command['source']}:{command['command']} ({command['confidence']:.2f})")
+
+        direct_dynamic_mix = (
+            source_handle is not None
+            and active_motion is None
+            and safety.state is SafetyState.RUNNING
+            and current_dynamic_gesture == "wrist_rotation"
+            and dynamic_confidence >= 0.75
+            and now - last_gesture_time > gesture_cooldown
+        )
+        if direct_dynamic_mix:
+            pending_action = "mix"
+            system_state = "EXECUTING"
+            last_gesture_time = now
+            print("Dynamic wrist rotation detected: executing MIX.")
 
         if gesture == "unknown":
             held_gesture = None
@@ -794,16 +818,21 @@ def run_pick_and_place(initial_action="move"):
                     last_gesture_time = now
                 elif gesture == "pinch":
                     pending_action = ACTIONS[action_index]["key"]
-                    system_state = "SELECT_DEST"
-                    selected_handle = registry.first_selectable(
-                        selection_purpose(), exclude=selection_exclude()
-                    )
-                    if selected_handle is None:
-                        set_status("NO TARGETS LEFT")
-                        system_state = "SELECT_ACTION"
-                        pending_action = None
-                    else:
+                    if pending_action == "mix":
+                        system_state = "EXECUTING"
+                        selected_handle = source_handle
                         print(f"Action chosen: {ACTIONS[action_index]['label']}")
+                    else:
+                        system_state = "SELECT_DEST"
+                        selected_handle = registry.first_selectable(
+                            selection_purpose(), exclude=selection_exclude()
+                        )
+                        if selected_handle is None:
+                            set_status("NO TARGETS LEFT")
+                            system_state = "SELECT_ACTION"
+                            pending_action = None
+                        else:
+                            print(f"Action chosen: {ACTIONS[action_index]['label']}")
                     last_gesture_time = now
                 elif gesture == "thumb_left":
                     system_state = "SELECT_SOURCE"
@@ -842,9 +871,13 @@ def run_pick_and_place(initial_action="move"):
         # gesture is reachable during the motion it exists to interrupt.
         if (system_state == "EXECUTING"
                 and active_motion is None
-                and dest_handle is not None):
+                and (pending_action == "mix" or dest_handle is not None)):
             stop_hovering()
-            if pending_action == "pour":
+            if pending_action == "mix":
+                command = command_mapper.mix(source_handle)
+                command.transfer = mix_contents
+                active_kind = "mix"
+            elif pending_action == "pour":
                 origin = registry.by_handle(source_handle)
                 command = command_mapper.pour(
                     source_handle,
@@ -881,6 +914,8 @@ def run_pick_and_place(initial_action="move"):
                         # transfer_contents already emptied the source and mixed
                         # the target; the target tube stays usable.
                         set_status("POURED" if result else "POUR FAILED")
+                    elif active_kind == "mix":
+                        set_status("MIXED" if result else "MIX FAILED")
                     elif active_kind == "undo":
                         if result:
                             set_status("UNDO EXECUTED")

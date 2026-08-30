@@ -1,5 +1,6 @@
 from gesture_controller import GestureController
 from hand_landmark_provider import HandLandmarkProvider
+from config import ACTIONS, GESTURE_COOLDOWN, GESTURE_HOLD_DURATION
 
 
 def test_gesture_controller_emits_commands():
@@ -11,6 +12,12 @@ def test_gesture_controller_emits_commands():
     dynamic_event = controller.handle_dynamic_gesture("grasp", 0.95)
     assert dynamic_event is not None
     assert dynamic_event["source"] == "dynamic"
+
+
+def test_mix_action_and_hold_timing_are_available():
+    assert any(action["key"] == "mix" for action in ACTIONS)
+    assert GESTURE_HOLD_DURATION >= 1.2
+    assert GESTURE_COOLDOWN >= 1.0
 
 
 def test_landmark_provider_has_expected_shape():

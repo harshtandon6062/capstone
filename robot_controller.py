@@ -581,6 +581,64 @@ class RobotController:
                 self._release_object(grasp_constraint)
         return poured
 
+    def mix_tube_steps(self, source_object):
+        """Rotate a held tube in place to simulate a mix or stir action."""
+        position, _ = self.get_object_state(source_object)
+        grasp_constraint = None
+        keep_holding = False
+        try:
+            if not (yield from self.approach_from_above_steps(
+                position[0], position[1], True, 200
+            )):
+                return False
+            aim = yield from self.center_gripper_over_steps(position[0], position[1], True)
+            if aim is None:
+                return False
+            if not (yield from self.move_to_steps([aim[0], aim[1], GRAB_Z], False, 150)):
+                return False
+            if not self.grasp_is_valid(source_object):
+                return False
+            grasp_constraint = self._attach_object(source_object)
+            if not (yield from self.move_to_steps([position[0], position[1], LIFT_Z], False, 200)):
+                return False
+            for _ in range(3):
+                rotation = self.physics.getQuaternionFromEuler([
+                    TARGET_EULER[0],
+                    TARGET_EULER[1],
+                    TARGET_EULER[2] + 0.8,
+                ])
+                if not (yield from self._drive_to_steps([position[0], position[1], LIFT_Z], False, 40, rotation)):
+                    return False
+                rotation = self.physics.getQuaternionFromEuler([
+                    TARGET_EULER[0],
+                    TARGET_EULER[1],
+                    TARGET_EULER[2] - 0.8,
+                ])
+                if not (yield from self._drive_to_steps([position[0], position[1], LIFT_Z], False, 40, rotation)):
+                    return False
+            if not (yield from self.move_to_steps([position[0], position[1], HOVER_Z], False, 100)):
+                return False
+            if not (yield from self.move_to_steps([position[0], position[1], HOVER_Z], True, 80)):
+                return False
+            self._release_object(grasp_constraint)
+            grasp_constraint = None
+            if not (yield from self.move_to_steps([position[0], position[1], HOVER_Z], True, 80)):
+                return False
+            if not (yield from self.reset_robot_steps()):
+                return False
+        except EmergencyStopError:
+            keep_holding = True
+            raise
+        finally:
+            if (grasp_constraint is not None
+                    and self._held_constraint == grasp_constraint
+                    and not keep_holding):
+                self._release_object(grasp_constraint)
+        return True
+
+    def mix_tube(self, source_object):
+        return self._drain(self.mix_tube_steps(source_object))
+
     def pour(self, source_object, target_object, return_position):
         return self._drain(
             self.pour_steps(source_object, target_object, return_position)

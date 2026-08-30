@@ -68,10 +68,10 @@ DESTINATION_Z_OFFSET = -0.025
 # get wrong. Navigating between tubes is free to undo, so it should feel
 # immediate. Committing a destination starts the robot moving, so it stays
 # slow enough to be a decision.
-NAVIGATION_HOLD_DURATION = 0.25
-NAVIGATION_COOLDOWN = 0.30
-GESTURE_HOLD_DURATION = 0.9
-GESTURE_COOLDOWN = 0.8
+NAVIGATION_HOLD_DURATION = 0.45
+NAVIGATION_COOLDOWN = 0.60
+GESTURE_HOLD_DURATION = 1.5
+GESTURE_COOLDOWN = 1.2
 UNDO_GESTURE_COOLDOWN = 10.0
 
 # The dynamic (LSTM) model costs ~80 ms per call and on the pick-and-place
@@ -145,6 +145,7 @@ IRREVERSIBLE_HOLD_DURATION = 2.0
 ACTIONS = [
     {"key": "move", "label": "MOVE", "hint": "place on a spot", "reversible": True},
     {"key": "pour", "label": "POUR", "hint": "into another tube", "reversible": False},
+    {"key": "mix", "label": "MIX", "hint": "rotate and stir tube", "reversible": False},
 ]
 HOVER_Z = 0.97
 GRAB_Z = 0.97

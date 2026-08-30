@@ -58,11 +58,11 @@ TASKS = [
      "color": (0, 255, 0), "action": "move"},
     {"gesture": "tilt", "name": "Pour", "status": "READY",
      "color": (0, 200, 255), "action": "pour"},
-    {"gesture": "wrist_rotation", "name": "Mix", "status": "Coming Soon",
-     "color": (255, 0, 255), "action": None},
+    {"gesture": "wrist_rotation", "name": "Mix", "status": "READY",
+     "color": (255, 0, 255), "action": "mix"},
 ]
 
-HOLD_DURATION = 3.0
+HOLD_DURATION = 4.0
 font = cv2.FONT_HERSHEY_SIMPLEX
 
 
