@@ -40,7 +40,7 @@ from config import (
     NAVIGATION_HOLD_DURATION,
     DYNAMIC_PREDICT_EVERY,
     MOTION_STEPS_PER_FRAME,
-    ACTIONS,
+    ACTIONS, action_needs_target,
     HOVER_OVER_SELECTION,
     IRREVERSIBLE_HOLD_DURATION,
     GRIPPER_BASE_ORIENTATION,
@@ -525,6 +525,38 @@ def run_pick_and_place(initial_action="move"):
             return usable[(usable.index(current) + step) % len(usable)]
         return usable[0]
 
+    def choose_action():
+        """Commit to the highlighted action and go wherever it needs next.
+
+        Mix acts on the tube already chosen, so there is no destination to pick
+        and it starts immediately. Move and pour both need a target first.
+
+        Both the gesture path and the key path call this. When each carried its
+        own copy they drifted, and the key path went on asking for a destination
+        that mix never used.
+        """
+        nonlocal pending_action, system_state, selected_handle
+        pending_action = ACTIONS[action_index]["key"]
+        label = ACTIONS[action_index]["label"]
+
+        if not ACTIONS[action_index]["needs_target"]:
+            system_state = "EXECUTING"
+            selected_handle = source_handle
+            print(f"Action chosen: {label}")
+            return
+
+        # Set the state first: which objects count as selectable is read from it.
+        system_state = "SELECT_DEST"
+        selected_handle = registry.first_selectable(
+            selection_purpose(), exclude=selection_exclude()
+        )
+        if selected_handle is None:
+            set_status("NO TARGETS LEFT")
+            system_state = "SELECT_ACTION"
+            pending_action = None
+        else:
+            print(f"Action chosen: {label}")
+
     def hover_target():
         """Which object the arm should be pointing at, or None to stay still.
 
@@ -817,22 +849,7 @@ def run_pick_and_place(initial_action="move"):
                     set_status(action_blocks()[ACTIONS[action_index]["key"]].upper())
                     last_gesture_time = now
                 elif gesture == "pinch":
-                    pending_action = ACTIONS[action_index]["key"]
-                    if pending_action == "mix":
-                        system_state = "EXECUTING"
-                        selected_handle = source_handle
-                        print(f"Action chosen: {ACTIONS[action_index]['label']}")
-                    else:
-                        system_state = "SELECT_DEST"
-                        selected_handle = registry.first_selectable(
-                            selection_purpose(), exclude=selection_exclude()
-                        )
-                        if selected_handle is None:
-                            set_status("NO TARGETS LEFT")
-                            system_state = "SELECT_ACTION"
-                            pending_action = None
-                        else:
-                            print(f"Action chosen: {ACTIONS[action_index]['label']}")
+                    choose_action()
                     last_gesture_time = now
                 elif gesture == "thumb_left":
                     system_state = "SELECT_SOURCE"
@@ -871,7 +888,8 @@ def run_pick_and_place(initial_action="move"):
         # gesture is reachable during the motion it exists to interrupt.
         if (system_state == "EXECUTING"
                 and active_motion is None
-                and (pending_action == "mix" or dest_handle is not None)):
+                and (not action_needs_target(pending_action)
+                     or dest_handle is not None)):
             stop_hovering()
             if pending_action == "mix":
                 command = command_mapper.mix(source_handle)
@@ -1060,15 +1078,7 @@ def run_pick_and_place(initial_action="move"):
                 if ACTIONS[action_index]["key"] in action_blocks():
                     set_status(action_blocks()[ACTIONS[action_index]["key"]].upper())
                     continue
-                pending_action = ACTIONS[action_index]["key"]
-                system_state = "SELECT_DEST"
-                selected_handle = registry.first_selectable(
-                    selection_purpose(), exclude=selection_exclude()
-                )
-                if selected_handle is None:
-                    set_status("NO TARGETS LEFT")
-                    system_state = "SELECT_ACTION"
-                    pending_action = None
+                choose_action()
         elif system_state in ("SELECT_SOURCE", "SELECT_DEST") and active_motion is None:
             if key in (83, ord('d'), 81, ord('a')):
                 nxt = registry.next_selectable(

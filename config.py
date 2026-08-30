@@ -142,11 +142,30 @@ IRREVERSIBLE_HOLD_DURATION = 2.0
 
 # What the operator can ask the robot to do. "reversible" drives both the undo
 # offer and how long the confirming hold has to be held.
+# `needs_target` is what the operator is asked for after choosing the action.
+# Mix acts on the tube already in hand - it lifts it, rotates it and sets it
+# back down - so asking for a destination would be asking for something the
+# motion never reads.
 ACTIONS = [
-    {"key": "move", "label": "MOVE", "hint": "place on a spot", "reversible": True},
-    {"key": "pour", "label": "POUR", "hint": "into another tube", "reversible": False},
-    {"key": "mix", "label": "MIX", "hint": "rotate and stir tube", "reversible": False},
+    {"key": "move", "label": "MOVE", "hint": "place on a spot",
+     "reversible": True, "needs_target": True},
+    {"key": "pour", "label": "POUR", "hint": "into another tube",
+     "reversible": False, "needs_target": True},
+    {"key": "mix", "label": "MIX", "hint": "rotate and stir tube",
+     "reversible": False, "needs_target": False},
 ]
+
+
+def action_needs_target(key):
+    """Whether `key` needs a destination before it can run.
+
+    Unknown keys answer True: refusing to start without a target is the safe
+    way to be wrong.
+    """
+    for action in ACTIONS:
+        if action["key"] == key:
+            return action["needs_target"]
+    return True
 HOVER_Z = 0.97
 GRAB_Z = 0.97
 LIFT_Z = 1.15

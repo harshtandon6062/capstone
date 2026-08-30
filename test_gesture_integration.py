@@ -1,6 +1,7 @@
 from gesture_controller import GestureController
 from hand_landmark_provider import HandLandmarkProvider
-from config import ACTIONS, GESTURE_COOLDOWN, GESTURE_HOLD_DURATION
+from config import (ACTIONS, GESTURE_COOLDOWN, GESTURE_HOLD_DURATION,
+                    action_needs_target)
 
 
 def test_gesture_controller_emits_commands():
@@ -23,3 +24,27 @@ def test_mix_action_and_hold_timing_are_available():
 def test_landmark_provider_has_expected_shape():
     provider = HandLandmarkProvider(num_hands=1)
     assert provider.latest_landmarks.shape == (63,)
+
+
+def test_every_action_declares_whether_it_needs_a_target():
+    """A missing declaration would silently fall back to demanding a target."""
+    for action in ACTIONS:
+        assert "needs_target" in action, f"{action['key']} does not say"
+        assert isinstance(action["needs_target"], bool)
+
+
+def test_mix_runs_on_the_tube_already_chosen():
+    """Mix lifts, rotates and sets down one tube, so there is no destination.
+
+    Asking for one is what the operator reported: a selection step whose answer
+    the motion never reads.
+    """
+    assert action_needs_target("mix") is False
+    assert action_needs_target("move") is True
+    assert action_needs_target("pour") is True
+
+
+def test_unknown_action_is_assumed_to_need_a_target():
+    """Refusing to start without a target is the safe way to be wrong."""
+    assert action_needs_target("something_new") is True
+    assert action_needs_target(None) is True
