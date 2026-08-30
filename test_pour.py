@@ -61,33 +61,36 @@ def test_pouring_empties_the_source_and_mixes_the_target():
     emptied = registry.by_handle(0)
     mixed = registry.by_handle(1)
 
-    assert emptied.consumed, "a tube that has been poured out is not usable again"
+    assert emptied.empty, "the tube that was poured out still reads as full"
     assert emptied.color_rgba == EMPTY_LIQUID_RGBA
-    assert emptied.consumed_caption == "empty"
-    assert mixed.available, "the tube poured into is still usable"
     assert mixed.color_rgba == mix_colors([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0])
     assert mixed.color_rgba != [1.0, 0.0, 0.0, 1.0]
     assert mixed.color_rgba != [0.0, 0.0, 1.0, 1.0]
 
 
+def test_an_emptied_tube_is_still_something_you_can_move():
+    """It has nothing left to pour, but it is still a tube on a table."""
+    registry = make_registry()
+    registry.transfer_contents(0, 1)
+    movable = [obj.handle for obj in registry.selectable("move_source")]
+    assert 0 in movable
+
+
 def test_a_tube_cannot_be_poured_into_itself():
     registry = make_registry()
     assert registry.transfer_contents(0, 0) is None
-    assert registry.next_available("source", 2, 1, exclude=0) == 1
-    assert registry.first_available("source", exclude=0) == 1
+    assert registry.next_selectable("pour_target", 2, 1, exclude=0) == 1
+    assert registry.first_selectable("pour_target", exclude=0) == 1
 
 
-def test_navigation_skips_the_excluded_tube_entirely():
+def test_only_tubes_with_contents_can_be_the_source_of_a_pour():
     registry = make_registry()
-    registry.consume(2)
-    # Tube 2 is used, so navigating from tube 1 wraps past it.
-    assert registry.next_available("source", 1, 1, exclude=0) == 1
-    assert registry.next_available("source", 1, 1, exclude=1) == 0
+    registry.transfer_contents(0, 1)      # 0 is now empty
+    registry.transfer_contents(2, 1)      # 2 is now empty too
 
-    # Nothing at all is left to pour into once the rest are used up.
-    registry.consume(0)
-    assert registry.next_available("source", 1, 1, exclude=1) is None
-    assert registry.first_available("source", exclude=1) is None
+    pourable = [obj.handle for obj in registry.selectable("pour_source")]
+    assert pourable == [1], "only the tube holding everything can still pour"
+    assert registry.first_selectable("pour_source") == 1
 
 
 def test_pour_command_refuses_to_offer_an_undo():

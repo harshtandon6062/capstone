@@ -161,6 +161,34 @@ The current PyBullet backend is isolated behind `RobotController`, leaving the
 command API suitable for a future ROS-backed controller.
 
 
+## What can be selected, and when
+
+Nothing in the workspace is ever "used up". A tube is a tube: it can be moved as
+many times as you like, wherever it currently is, and emptying it does not take
+it off the table.
+
+| Step | What may be chosen |
+|---|---|
+| Source | every tube, however many times it has already been moved |
+| Action → Move | only spots with no tube standing on them |
+| Action → Pour | any other tube; offered only if this one has something in it |
+
+**Spot occupancy is derived, not remembered.** A spot is taken when a tube is
+actually standing within `SPOT_OCCUPANCY_RADIUS` of it, worked out from live
+positions each frame. Flags for this went stale every time the world changed by
+another route — an undo, a scene reset, a tube moved somewhere else — and left
+spots looking used with nothing on them. Nothing has to be released or cleaned
+up now; moving a tube off a spot frees it because the tube is no longer there.
+
+An action that cannot work is dimmed and says why (`tube is empty`, `spots
+full`), rather than being offered and then silently doing nothing.
+
+Pouring an empty tube is refused. Pouring into an empty tube gives it the
+contents as they are — "empty" is not a liquid, and averaging with it tinted
+every subsequent pour toward the empty-tube colour.
+
+`R` resets contents as well as positions, so tubes do not stay permanently empty.
+
 ## Reversibility, and why it is the point
 
 Every action except pouring can be undone. That asymmetry is deliberate, and the
@@ -179,6 +207,18 @@ and both the target and confirmation screens say it cannot be undone.
 This matters more than it looks. If every action is reversible, a confirmation
 step has nothing to protect and is just friction. One irreversible action is what
 makes the confirmation gate mean something.
+
+## A renderer trap worth knowing about
+
+The simulation window used to open with `--opengl2`. That flag is a compatibility
+fallback for machines whose drivers cannot run the default renderer, and it
+**silently ignores `changeVisualShape`** — so a tube that had been emptied or
+mixed kept its old colour on screen while the panel showed the new one. Measured
+here: recolouring a tube red to blue changed 0.00 of the rendered pixels under
+`--opengl2` and 3.14 under the default renderer.
+
+`open_simulation_window()` now tries the default first and only falls back to
+`--opengl2` if it will not start, warning on the console when it does.
 
 ## Running on a real Niryo Ned 2
 

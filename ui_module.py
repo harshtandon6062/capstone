@@ -40,8 +40,14 @@ def _readable_text_color(bgr):
 
 
 def _draw_row(panel, objects, y, selected_handle, chosen_handles, is_selecting,
-              is_confirming, used_caption):
-    """Draw one row of swatches, spaced to fit however many objects there are."""
+              is_confirming, unavailable=(), unavailable_caption="used"):
+    """Draw one row of swatches, spaced to fit however many objects there are.
+
+    `unavailable` is passed in rather than read off the object, because whether
+    something can be chosen depends on what is being chosen for. A spot is
+    unavailable when a tube is standing on it; a tube is never unavailable as a
+    source, however many times it has already been handled.
+    """
     if not objects:
         return
 
@@ -54,9 +60,9 @@ def _draw_row(panel, objects, y, selected_handle, chosen_handles, is_selecting,
     for position, obj in enumerate(objects):
         x = left + position * (cell + gap)
 
-        if obj.consumed:
+        if obj.handle in unavailable:
             cv2.rectangle(panel, (x, y), (x + cell, y + 40), (60, 60, 60), 1)
-            cv2.putText(panel, obj.consumed_caption or used_caption,
+            cv2.putText(panel, unavailable_caption,
                         (x + 6, y + 27), font, 0.4, (80, 80, 80), 1)
             continue
 
@@ -64,7 +70,7 @@ def _draw_row(panel, objects, y, selected_handle, chosen_handles, is_selecting,
         cv2.rectangle(panel, (x, y), (x + cell, y + 40), color, -1)
         cv2.rectangle(panel, (x, y), (x + cell, y + 40), (255, 255, 255), 1)
 
-        caption = obj.color_name[:3]
+        caption = "EMPTY" if obj.empty else obj.color_name[:3]
         text_size = cv2.getTextSize(caption, font, 0.5, 2)[0]
         cv2.putText(
             panel,
@@ -91,8 +97,14 @@ def _draw_row(panel, objects, y, selected_handle, chosen_handles, is_selecting,
             )
 
 
-def _draw_actions(panel, actions, action_index, pending_action, is_selecting):
-    """Show what the robot is being asked to do, and which choice cannot be undone."""
+def _draw_actions(panel, actions, action_index, pending_action, is_selecting,
+                  blocked=None):
+    """Show what the robot is being asked to do, and which choice cannot be undone.
+
+    An action that cannot work right now is dimmed and says why. Offering it and
+    then doing nothing is the failure mode this panel exists to avoid.
+    """
+    blocked = blocked or {}
     if not actions:
         return
 
@@ -102,16 +114,26 @@ def _draw_actions(panel, actions, action_index, pending_action, is_selecting):
     for position, action in enumerate(actions):
         x = left + position * (cell + gap)
         chosen = action["key"] == pending_action
+        reason = blocked.get(action["key"])
         # Red is reserved for the choice that cannot be taken back.
-        edge = (0, 0, 255) if not action["reversible"] else (150, 150, 150)
-        fill = (35, 35, 55) if not action["reversible"] else (45, 45, 45)
+        if reason:
+            edge, fill = (70, 70, 70), (25, 25, 25)
+            label_color, hint_color = (110, 110, 110), (110, 110, 110)
+        elif not action["reversible"]:
+            edge, fill = (0, 0, 255), (35, 35, 55)
+            label_color, hint_color = (255, 255, 255), (150, 150, 150)
+        else:
+            edge, fill = (150, 150, 150), (45, 45, 45)
+            label_color, hint_color = (255, 255, 255), (150, 150, 150)
 
         cv2.rectangle(panel, (x, ACTION_ROW_Y), (x + cell, ACTION_ROW_Y + 30), fill, -1)
         cv2.rectangle(panel, (x, ACTION_ROW_Y), (x + cell, ACTION_ROW_Y + 30), edge, 1)
         cv2.putText(panel, action["label"], (x + 8, ACTION_ROW_Y + 21), font, 0.5,
-                    (255, 255, 255), 2)
-        cv2.putText(panel, action["hint"], (x + 62, ACTION_ROW_Y + 21), font, 0.34,
-                    (150, 150, 150), 1)
+                    label_color, 2)
+        cv2.putText(panel, reason or action["hint"], (x + 62, ACTION_ROW_Y + 21),
+                    font, 0.34, hint_color, 1)
+        if reason:
+            continue
 
         if is_selecting and position == action_index:
             cv2.rectangle(panel, (x - 3, ACTION_ROW_Y - 3),
@@ -123,7 +145,8 @@ def _draw_actions(panel, actions, action_index, pending_action, is_selecting):
 
 def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
             dest_handle=None, undo_available=False, status_message="",
-            hold_progress=0.0, actions=(), action_index=0, pending_action=None):
+            hold_progress=0.0, actions=(), action_index=0, pending_action=None,
+            blocked_actions=None):
     """Render the operator panel from the live registry."""
     panel = np.zeros((PANEL_HEIGHT, PANEL_WIDTH, 3), dtype=np.uint8)
 
@@ -165,7 +188,7 @@ def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
 
     cv2.putText(panel, "ACTION:", (10, ACTION_ROW_Y + 21), font, 0.5, (180, 180, 180), 1)
     _draw_actions(panel, actions, action_index, pending_action,
-                  state == "SELECT_ACTION")
+                  state == "SELECT_ACTION", blocked_actions)
 
     # For a pour the target is another tube, so the tube row is where both the
     # source and the target are shown.
@@ -184,9 +207,11 @@ def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
         chosen_tubes,
         selecting_tubes,
         confirming_tubes,
-        "done",
     )
 
+    # A spot is taken when a tube is standing on it, which is read from where the
+    # tubes are rather than from a flag someone had to remember to clear.
+    occupied = set(registry.occupancy())
     cv2.putText(panel, "SPOTS:", (10, SPOT_ROW_Y + 20), font, 0.5, (180, 180, 180), 1)
     _draw_row(
         panel,
@@ -196,7 +221,8 @@ def draw_ui(state, gesture, registry, selected_handle=None, source_handle=None,
         set() if pouring else {dest_handle},
         state == "SELECT_DEST" and not pouring,
         state == "CONFIRM_DEST" and not pouring,
-        "used",
+        occupied,
+        "taken",
     )
 
     # Sits on its own line below the spot row so it never overlaps a swatch.

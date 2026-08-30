@@ -8,6 +8,7 @@ from config import (
     LIFT_Z,
     POUR_CLEARANCE,
     POUR_HOLD_STEPS,
+    POUR_SWING,
     POUR_TILT_RADIANS,
     POUR_Z,
     ROBOT_BASE_POSITION,
@@ -439,10 +440,14 @@ class RobotController:
     def pour_steps(self, source_object, target_object, return_position):
         """Tip one tube over another, then put the tube back where it came from.
 
-        The transfer of contents is not modelled here - this is the motion only.
-        What matters about it is that once it has happened there is no motion
-        that puts the contents back, which is why the command wrapping it refuses
-        to offer an undo.
+        Every part of the motion where the tube is tilted is either a rotation in
+        place or a straight vertical move. Nothing is carried across the table
+        while tipped over, which is what made an earlier version look like it was
+        about to spill the contents on the way past.
+
+        The order is the one a person would use: bring the tube over upright, tip
+        it, lower it into the target, pour, lift straight out, straighten up, and
+        only then carry it back.
         """
         source, _ = self.get_object_state(source_object)
         target, _ = self.get_object_state(target_object)
@@ -451,6 +456,12 @@ class RobotController:
             target[1],
             target[2] + TEST_TUBE_HEIGHT + POUR_CLEARANCE,
         ]
+        # Park the wrist off to the side by however far the mouth will swing, so
+        # that tipping lands the mouth on the target instead of beside it.
+        sign = 1.0 if target[1] < ROBOT_BASE_POSITION[1] else -1.0
+        staging = [target[0], target[1] + sign * POUR_SWING, LIFT_Z]
+        tipped = self.pour_orientation_for(target[1])
+
         grasp_constraint = None
         keep_holding = False
         poured = False
@@ -471,31 +482,36 @@ class RobotController:
                 [source[0], source[1], LIFT_Z], False, 200
             )):
                 return False
-            if not (yield from self._carry_steps(source, target)):
-                return False
 
-            # Tilt at clearance height, where the arc the tube swings through is
-            # well above the target, and only then bring the mouth down onto it.
-            # Tilting at pouring height sweeps the tube straight through the tube
-            # being poured into and knocks it.
-            staging = [target[0], target[1], LIFT_Z]
+            # Carried upright, at clearance height, to one side of the target.
+            if not (yield from self._carry_steps(source, staging)):
+                return False
+            # Tipped in place, high and clear of everything.
             if not (yield from self._tilt_in_place_steps(staging, target[1])):
                 return False
-            pour_aim = yield from self.center_pour_over_steps(
-                mouth_target, start=staging
-            )
+            # Lowered onto the target. center_pour_over_steps corrects what the
+            # swing estimate got wrong, which is now centimetres rather than the
+            # whole 0.26 m.
+            pour_aim = yield from self.center_pour_over_steps(mouth_target, start=staging)
             if pour_aim is None:
                 return False
             if not (yield from self._step_for(POUR_HOLD_STEPS)):
                 return False
             poured = True
 
-            # Come back upright the same way, for the same reason.
+            # Straight back up, still tipped, then straighten before travelling.
+            if not (yield from self._drive_to_steps(
+                [pour_aim[0], pour_aim[1], LIFT_Z], False, 200, tipped
+            )):
+                return False
             if not (yield from self._untilt_in_place_steps(
                 [pour_aim[0], pour_aim[1], LIFT_Z], target[1]
             )):
                 return False
-            if not (yield from self._carry_steps(pour_aim, return_position)):
+
+            if not (yield from self._carry_steps(
+                [pour_aim[0], pour_aim[1], LIFT_Z], return_position
+            )):
                 return False
             drop = yield from self.center_gripper_over_steps(
                 return_position[0], return_position[1], False

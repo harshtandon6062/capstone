@@ -36,6 +36,11 @@ DESTINATION_SPOT_COLORS_RGBA = [
 CUBE_COLOR_NAMES = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA"]
 DESTINATION_SPOT_COLOR_NAMES = ["RED", "GREEN", "ORANGE", "PURPLE", "CYAN"]
 
+# How close a tube has to be to a spot to count as standing on it. Occupancy is
+# derived from live positions rather than remembered, so this is the one number
+# that decides it. Spots are 0.12 m apart, so this must stay under half of that.
+SPOT_OCCUPANCY_RADIUS = 0.06
+
 OBJECT_COUNT = 5
 CUBE_HALF_EXTENTS = [0.025, 0.025, 0.025]
 DESTINATION_SPOT_HALF_EXTENTS = [0.03, 0.03, 0.002]
@@ -103,6 +108,11 @@ POUR_Z = 1.09
 POUR_HOLD_STEPS = 150
 # Height of the tilted tube's mouth above the rim of the tube being poured into.
 POUR_CLEARANCE = 0.09
+# How far sideways the mouth swings when the tube is tipped over. The tube hangs
+# well below the wrist, so tipping it throws the open end a long way. The wrist is
+# parked this far off the target before tipping, so that tipping brings the mouth
+# onto the target rather than having to carry it there afterwards.
+POUR_SWING = 0.26
 
 # An irreversible action gets a longer, more deliberate confirmation than one
 # that can be undone. Same interface, different cost of being wrong.

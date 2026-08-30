@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 # gesture_module is imported lazily inside run_pick_and_place()
 # because it creates a HandLandmarker at import time and needs CWD set first
 
-from ui_module import draw_ui
+from ui_module import PANEL_HEIGHT, PANEL_WIDTH, draw_ui
 from safety_controller import EmergencyStopError, SafetyController, SafetyState
 from robot_controller import RobotController
 from commands import CommandInvoker, CommandMapper
@@ -137,6 +137,31 @@ def open_camera():
     return None
 
 
+def open_simulation_window():
+    """Open the PyBullet window with a renderer that can actually repaint.
+
+    --opengl2 is the compatibility fallback for machines whose drivers cannot run
+    the default renderer. It also silently ignores changeVisualShape: a tube that
+    has been emptied or mixed keeps its old colour on screen while the panel shows
+    the new one, which reads as the colour change simply not working. Measured on
+    this machine: recolouring a tube red to blue changed 0.00 of the rendered
+    pixels under --opengl2, and 3.14 under the default renderer.
+
+    So try the default first and only fall back when it will not start.
+    """
+    for options in ("", "--opengl2"):
+        try:
+            client = p.connect(p.GUI, options=options)
+        except Exception:
+            continue
+        if client >= 0:
+            if options:
+                print("[WARN] falling back to --opengl2; tube colour changes will "
+                      "not show in the simulation window", flush=True)
+            return client
+    return -1
+
+
 def create_test_tube(position, color):
     """Create a grabbable tube with simple collision and layered visuals."""
     collision = p.createCollisionShape(
@@ -251,7 +276,7 @@ def run_pick_and_place(initial_action="move"):
     # ──────────────────────────────────────────────
     print("[START] PyBullet", flush=True)
     try:
-        physics_client = p.connect(p.GUI, options="--opengl2")
+        physics_client = open_simulation_window()
         if physics_client < 0:
             raise RuntimeError("p.connect(p.GUI) returned an invalid client id")
     except Exception as error:
@@ -375,7 +400,7 @@ def run_pick_and_place(initial_action="move"):
     # STATE MACHINE + MAIN LOOP
     # ──────────────────────────────────────────────
     system_state = "SELECT_SOURCE"
-    selected_handle = registry.first_available("source")
+    selected_handle = registry.first_selectable("move_source")
     source_handle = None
     dest_handle = None
     last_gesture_time = 0
@@ -387,7 +412,7 @@ def run_pick_and_place(initial_action="move"):
     blue_glove_mode = True
 
     cv2.namedWindow("Pick and Place", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Pick and Place", 640, 700)
+    cv2.resizeWindow("Pick and Place", PANEL_WIDTH, 480 + PANEL_HEIGHT)
 
     def poll_safety_input():
         key = cv2.waitKey(1) & 0xFF
@@ -405,8 +430,6 @@ def run_pick_and_place(initial_action="move"):
     # The motion currently in flight, advanced a slice at a time by this loop.
     active_motion = None
     active_kind = None
-    motion_source = None
-    motion_dest = None
     # A motion an emergency stop interrupted. It stays suspended, still gripping,
     # until the operator clears the stop and the arm can set the sample down.
     interrupted_motion = None
@@ -436,43 +459,80 @@ def run_pick_and_place(initial_action="move"):
                 return True, bool(stop.value)
         return False, None
 
-    def selection_kind():
+    def selection_purpose():
+        """What is being chosen right now, which decides what may be chosen.
+
+        The action is not known yet while a source is being picked, so any tube
+        is fair game there; the action only restricts the target.
+        """
         if system_state in ("SELECT_SOURCE", "CONFIRM_SOURCE"):
-            return "source"
-        # A pour goes into another tube, not onto a spot.
-        return "source" if pending_action == "pour" else "destination"
+            return "move_source"
+        return "pour_target" if pending_action == "pour" else "move_target"
 
     def selection_exclude():
         """A tube cannot be poured into itself."""
         return source_handle if pending_action == "pour" else None
 
+    def is_selectable(handle):
+        options = registry.selectable(selection_purpose(), selection_exclude())
+        return any(obj.handle == handle for obj in options)
+
+    def action_blocks():
+        """Why each action is unavailable for the tube in hand, if it is.
+
+        Offering an action that cannot work and then silently doing nothing is
+        the same failure the launcher had; the panel says why instead.
+        """
+        blocked = {}
+        source = registry.by_handle(source_handle)
+        if not registry.can_move():
+            blocked["move"] = "spots full"
+        if source is None or source.empty:
+            blocked["pour"] = "tube is empty"
+        elif not registry.can_pour(source_handle):
+            blocked["pour"] = "no other tube"
+        return blocked
+
+    def usable_action_indices():
+        blocked = action_blocks()
+        return [i for i, action in enumerate(ACTIONS) if action["key"] not in blocked]
+
+    def step_action(current, step):
+        usable = usable_action_indices()
+        if not usable:
+            return None
+        if current in usable:
+            return usable[(usable.index(current) + step) % len(usable)]
+        return usable[0]
+
+    def apply_appearance(obj):
+        """Make the simulation show what the registry says the tube contains."""
+        if obj.kind != "source":
+            return
+        p.changeVisualShape(obj.handle, -1, rgbaColor=obj.color_rgba)
+        if obj.empty:
+            # An emptied tube shows no liquid at all.
+            p.changeVisualShape(obj.handle, 0, rgbaColor=[1.0, 1.0, 1.0, 0.0])
+        else:
+            p.changeVisualShape(
+                obj.handle, 0,
+                rgbaColor=[c * 0.75 for c in obj.color_rgba[:3]] + [1.0],
+            )
+        perception.set_source_color(obj.handle, obj.color_rgba, obj.label,
+                                    obj.color_name)
+
     def transfer_contents(from_handle, into_handle):
         """Apply a completed pour to the workspace.
 
-        The registry decides what mixing means; this only makes the simulation
+        The registry decides what pouring means; this only makes the simulation
         and the perception source agree with it, so the panel and the scene keep
         showing the same thing.
         """
         changed = registry.transfer_contents(from_handle, into_handle)
         if changed is None:
             return
-        emptied, mixed = changed
-        for obj in (emptied, mixed):
-            perception.set_source_color(obj.handle, obj.color_rgba, obj.label,
-                                        obj.color_name)
-            p.changeVisualShape(obj.handle, -1, rgbaColor=obj.color_rgba)
-        p.changeVisualShape(mixed.handle, 0,
-                            rgbaColor=[c * 0.75 for c in mixed.color_rgba[:3]] + [1.0])
-        # An emptied tube shows no liquid at all.
-        p.changeVisualShape(emptied.handle, 0, rgbaColor=[1.0, 1.0, 1.0, 0.0])
-
-    def release_placement(command):
-        """Return the tube and spot a command consumed back to the available pool."""
-        registry.release(command.source_object)
-        for spot in registry.destinations:
-            if list(spot.position) == list(command.destination):
-                registry.release(spot.handle)
-                break
+        for obj in changed:
+            apply_appearance(obj)
 
     print("[START] application loop", flush=True)
     print("=" * 50)
@@ -484,7 +544,6 @@ def run_pick_and_place(initial_action="move"):
 
     camera_diagnostic_count = 0
     last_camera_diagnostic = 0.0
-    camera_connected = cap is not None
 
     while True:
         raw_frame = None
@@ -495,7 +554,6 @@ def run_pick_and_place(initial_action="move"):
                 print(f"[CAMERA] read failure ret={ret} frame_is_none={raw_frame is None}", flush=True)
                 cap.release()
                 cap = None
-                camera_connected = False
 
         now = time.time()
         if raw_frame is not None:
@@ -599,7 +657,7 @@ def run_pick_and_place(initial_action="move"):
             source_handle = None
             dest_handle = None
             pending_action = None
-            selected_handle = registry.first_available("source")
+            selected_handle = registry.first_selectable("move_source")
 
         # Once the stop is cleared, put down whatever the interrupted motion was
         # carrying before abandoning it.
@@ -636,21 +694,21 @@ def run_pick_and_place(initial_action="move"):
                     last_gesture_time = now
 
             if system_state in ("SELECT_SOURCE", "SELECT_DEST"):
-                kind = selection_kind()
                 if gesture in ("point_right", "point_left"):
                     step = 1 if gesture == "point_right" else -1
                     # Returns None when nothing is left; it never spins.
-                    next_handle = registry.next_available(
-                        kind, selected_handle, step, exclude=selection_exclude()
+                    next_handle = registry.next_selectable(
+                        selection_purpose(), selected_handle, step,
+                        exclude=selection_exclude()
                     )
                     if next_handle is None:
-                        set_status(f"NO {kind.upper()}S LEFT")
+                        set_status("NOTHING LEFT TO CHOOSE")
                     else:
                         selected_handle = next_handle
                     last_gesture_time = now
                 elif gesture == "pinch":
                     chosen = registry.by_handle(selected_handle)
-                    if chosen is not None and chosen.available:
+                    if chosen is not None and is_selectable(chosen.handle):
                         if system_state == "SELECT_SOURCE":
                             source_handle = selected_handle
                             system_state = "CONFIRM_SOURCE"
@@ -664,6 +722,8 @@ def run_pick_and_place(initial_action="move"):
                 if gesture == "thumbs_up":
                     system_state = "SELECT_ACTION"
                     action_index = default_action_index
+                    if action_index not in usable_action_indices():
+                        action_index = step_action(action_index, 1) or 0
                     pending_action = None
                     chosen = registry.by_handle(source_handle)
                     print(f"Source CONFIRMED: {chosen.label if chosen else source_handle}")
@@ -677,13 +737,20 @@ def run_pick_and_place(initial_action="move"):
             elif system_state == "SELECT_ACTION":
                 if gesture in ("point_right", "point_left"):
                     step = 1 if gesture == "point_right" else -1
-                    action_index = (action_index + step) % len(ACTIONS)
+                    nxt = step_action(action_index, step)
+                    if nxt is None:
+                        set_status("NO ACTION POSSIBLE")
+                    else:
+                        action_index = nxt
+                    last_gesture_time = now
+                elif gesture == "pinch" and ACTIONS[action_index]["key"] in action_blocks():
+                    set_status(action_blocks()[ACTIONS[action_index]["key"]].upper())
                     last_gesture_time = now
                 elif gesture == "pinch":
                     pending_action = ACTIONS[action_index]["key"]
                     system_state = "SELECT_DEST"
-                    selected_handle = registry.first_available(
-                        selection_kind(), exclude=selection_exclude()
+                    selected_handle = registry.first_selectable(
+                        selection_purpose(), exclude=selection_exclude()
                     )
                     if selected_handle is None:
                         set_status("NO TARGETS LEFT")
@@ -735,7 +802,6 @@ def run_pick_and_place(initial_action="move"):
                     list(destination.position),
                 )
                 active_kind = "move"
-            motion_source, motion_dest = source_handle, dest_handle
             active_motion = command_invoker.execute_steps(command)
 
         if active_motion is not None:
@@ -749,19 +815,16 @@ def run_pick_and_place(initial_action="move"):
                     finished, result = True, False
                 if finished:
                     if active_kind == "move":
-                        if result:
-                            registry.consume(motion_source)
-                            registry.consume(motion_dest)
-                            set_status("PLACED")
-                        else:
-                            set_status("MOVE FAILED")
+                        # Nothing is used up by moving. The tube can be picked up
+                        # again from wherever it now is, and the spot it left is
+                        # free again because occupancy is read from positions.
+                        set_status("PLACED" if result else "MOVE FAILED")
                     elif active_kind == "pour":
                         # transfer_contents already emptied the source and mixed
                         # the target; the target tube stays usable.
                         set_status("POURED" if result else "POUR FAILED")
                     elif active_kind == "undo":
                         if result:
-                            release_placement(command_invoker.last_undone_command)
                             set_status("UNDO EXECUTED")
                         else:
                             set_status("UNDO FAILED")
@@ -776,7 +839,7 @@ def run_pick_and_place(initial_action="move"):
                     source_handle = None
                     dest_handle = None
                     pending_action = None
-                    selected_handle = registry.first_available("source")
+                    selected_handle = registry.first_selectable("move_source")
         else:
             # Never block here: the camera and gesture pipeline must keep running
             # while paused, otherwise the webcam freezes and a gesture-triggered
@@ -824,10 +887,12 @@ def run_pick_and_place(initial_action="move"):
             ACTIONS,
             action_index,
             pending_action,
+            action_blocks(),
         )
-        if camera_connected:
-            cv2.imshow("Webcam", frame)
-        cv2.imshow("Pick and Place", ui)
+        # One window: the camera view sits directly above the panel, so the
+        # operator never has to look in two places or hunt for a second window.
+        camera_view = cv2.resize(frame, (PANEL_WIDTH, 480))
+        cv2.imshow("Pick and Place", np.vstack((camera_view, ui)))
 
         key = cv2.waitKey(1) & 0xFF
         safety.handle_key(key)
@@ -850,11 +915,14 @@ def run_pick_and_place(initial_action="move"):
             robot_controller.reset_robot()
             command_invoker.clear_history()
             registry.reset().refresh()
+            # Put the liquids back too, not just the positions.
+            for obj in registry.sources:
+                apply_appearance(obj)
             system_state = "SELECT_SOURCE"
             source_handle = None
             dest_handle = None
             pending_action = None
-            selected_handle = registry.first_available("source")
+            selected_handle = registry.first_selectable("move_source")
             set_status("SCENE RESET")
             for _ in range(240):
                 safety.step_if_running()
@@ -883,39 +951,39 @@ def run_pick_and_place(initial_action="move"):
                 system_state = "SELECT_DEST"
                 dest_handle = None
         elif system_state == "SELECT_ACTION" and active_motion is None:
-            if key == 83 or key == ord('d'):
-                action_index = (action_index + 1) % len(ACTIONS)
-            elif key == 81 or key == ord('a'):
-                action_index = (action_index - 1) % len(ACTIONS)
+            if key in (83, ord('d'), 81, ord('a')):
+                nxt = step_action(action_index, 1 if key in (83, ord('d')) else -1)
+                if nxt is None:
+                    set_status("NO ACTION POSSIBLE")
+                else:
+                    action_index = nxt
             elif key == 13 or key == ord(' '):
+                if ACTIONS[action_index]["key"] in action_blocks():
+                    set_status(action_blocks()[ACTIONS[action_index]["key"]].upper())
+                    continue
                 pending_action = ACTIONS[action_index]["key"]
                 system_state = "SELECT_DEST"
-                selected_handle = registry.first_available(
-                    selection_kind(), exclude=selection_exclude()
+                selected_handle = registry.first_selectable(
+                    selection_purpose(), exclude=selection_exclude()
                 )
                 if selected_handle is None:
                     set_status("NO TARGETS LEFT")
                     system_state = "SELECT_ACTION"
                     pending_action = None
         elif system_state in ("SELECT_SOURCE", "SELECT_DEST") and active_motion is None:
-            kind = selection_kind()
-            if key == 83 or key == ord('d'):
-                nxt = registry.next_available(kind, selected_handle, 1,
-                                              exclude=selection_exclude())
+            if key in (83, ord('d'), 81, ord('a')):
+                nxt = registry.next_selectable(
+                    selection_purpose(), selected_handle,
+                    1 if key in (83, ord('d')) else -1,
+                    exclude=selection_exclude(),
+                )
                 if nxt is None:
-                    set_status(f"NO {kind.upper()}S LEFT")
-                else:
-                    selected_handle = nxt
-            elif key == 81 or key == ord('a'):
-                nxt = registry.next_available(kind, selected_handle, -1,
-                                              exclude=selection_exclude())
-                if nxt is None:
-                    set_status(f"NO {kind.upper()}S LEFT")
+                    set_status("NOTHING LEFT TO CHOOSE")
                 else:
                     selected_handle = nxt
             elif key == 13 or key == ord(' '):
                 chosen = registry.by_handle(selected_handle)
-                if chosen is not None and chosen.available:
+                if chosen is not None and is_selectable(chosen.handle):
                     if system_state == "SELECT_SOURCE":
                         source_handle = selected_handle
                         system_state = "CONFIRM_SOURCE"
@@ -927,6 +995,8 @@ def run_pick_and_place(initial_action="move"):
                 if system_state == "CONFIRM_SOURCE":
                     system_state = "SELECT_ACTION"
                     action_index = default_action_index
+                    if action_index not in usable_action_indices():
+                        action_index = step_action(action_index, 1) or 0
                     pending_action = None
                 elif system_state == "CONFIRM_DEST":
                     system_state = "EXECUTING"
@@ -938,8 +1008,6 @@ def run_pick_and_place(initial_action="move"):
     # mid-run, so every teardown step has to tolerate a missing resource.
     if cap is not None:
         cap.release()
-    if camera_connected:
-        cv2.destroyWindow("Webcam")
     cv2.destroyWindow("Pick and Place")
     landmark_provider.close()
     p.disconnect()
