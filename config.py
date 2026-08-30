@@ -117,39 +117,24 @@ POUR_TILT_RADIANS = 1.6
 POUR_Z = 1.09
 POUR_HOLD_STEPS = 150
 # Height of the tilted tube's mouth above the rim of the tube being poured into.
-POUR_CLEARANCE = 0.09
+#
+# This one number decides whether the arm hits anything. Lining the mouth up with
+# the target is done by measurement, so a lower pour means a lower wrist - at
+# 0.09 the wrist ended up at 0.757, below the tops of the tubes, and the arm's own
+# links dragged the neighbours up to 87 mm across the bench. At 0.16 the wrist
+# stays clear and nothing but the target is touched, with the aim no worse.
+#
+# Measured over all 20 ordered pairs:
+#   0.09  mouth inside the rim 19/20, worst bystander shove 86.8 mm
+#   0.16  mouth inside the rim 20/20, worst bystander shove  0.0 mm
+POUR_CLEARANCE = 0.16
 # How far sideways the mouth swings when the tube is tipped over. The tube hangs
 # well below the wrist, so tipping it throws the open end a long way. The wrist is
 # parked this far off the target before tipping, so that tipping brings the mouth
 # onto the target rather than having to carry it there afterwards.
-POUR_SWING = 0.257
-# Bounds on the pour alignment. Lining the tube's mouth up with the target is a
-# fixed-point iteration, and the mouth does NOT track the wrist one for one:
-# moving the wrist changes the arm's configuration, and with it how far the tube
-# actually tips. Unbounded, that walked the wrist down to 0.76 m, where the arm's
-# own links sweep through the other tubes on the bench.
-POUR_WRIST_FLOOR = 0.76
-# Sideways room the alignment may use. The dangerous direction is down, not
-# across: the wrist travels over the spot row, which is clear of anything solid.
-# A tight sideways cap just stopped the correction reaching the target.
-POUR_AIM_LIMIT = 0.35
+POUR_SWING = 0.26
 
-# Pouring is done with the tool yawed a quarter turn, and that matters far more
-# than it looks. Rolled at the default yaw, the tube's mouth swings along y -
-# straight over the neighbouring tubes - so putting the mouth on the target meant
-# dropping the wrist to bench height in the middle of the row, where the arm's own
-# links sweep everything off the table.
-#
-# Yawed 90 degrees the swing is along x instead, over the row of destination
-# spots, which are flat markers with no collision geometry at all. The arm can
-# come down there without touching anything, so the tube can be tipped properly
-# level instead of barely tilted.
-#
-# Measured at this yaw: 84 degrees of tilt, mouth 0.257 m along -x from the wrist
-# and level with it.
-POUR_YAW = -1.5707963267948966
-POUR_TILT_STAGES = 6
-POUR_TILT_MAX_FRACTION = 1.0
+
 
 # An irreversible action gets a longer, more deliberate confirmation than one
 # that can be undone. Same interface, different cost of being wrong.

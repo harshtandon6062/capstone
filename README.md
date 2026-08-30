@@ -231,33 +231,24 @@ every subsequent pour toward the empty-tube colour.
 
 `R` resets contents as well as positions, so tubes do not stay permanently empty.
 
-## Why the pour is a shallow tip, not a full upend
+## Pour height is what keeps the arm off the other tubes
 
-Rolling the wrist swings the tube **up and over**, not down. Measured, the mouth's
-height relative to the wrist goes:
+Lining the tube's mouth up with the target is done by measurement, so how high
+the pour happens decides how low the wrist goes. Pouring 0.09 m above the rim put
+the wrist at 0.757 - below the tops of the tubes - and the arm's own links dragged
+the neighbours up to 87 mm across the bench. Not the gripper, and nothing to do
+with the tube being carried: the arm itself.
 
-| roll | tube tilt | mouth vs wrist |
+Raising the pour to 0.16 m fixes it outright, and costs nothing in accuracy.
+Measured over all 20 ordered pairs, during the pour itself rather than at the
+best instant in passing:
+
+| pour height | mouth inside the 22 mm rim | worst bystander shove |
 |---|---|---|
-| none | 1° | −0.255 m (below) |
-| half | 39° | −0.170 m |
-| full | 80° | **+0.027 m (level)** |
-| 1.5x | 127° | +0.203 m (above) |
+| 0.09 m | 19/20 | 86.8 mm |
+| **0.16 m** | **20/20** | **0.0 mm** |
 
-So the steeper the tip, the *lower* the wrist has to go to keep the mouth over a
-tube standing on the table. Past about 40° that means putting the wrist at bench
-height — where the arm's own links sweep through everything else on the table.
-That is what was throwing tubes across the workspace.
-
-The tilt is therefore chosen by measurement rather than set to a fixed angle:
-`_tilt_in_place_steps` ramps the roll in stages and, after each one, works out
-where the wrist would have to be for that tip to reach the target. It stops at
-the last angle that keeps the wrist above `POUR_WRIST_FLOOR` — which is grasp
-height, and demonstrably safe because ordinary picking descends there without
-disturbing a neighbour.
-
-The result is a tip of roughly 40–70° pouring from a little above the rim, rather
-than a full upend. A deeper tip is not reachable on this arm without driving it
-into the bench.
+The wrist now stays above 0.822 throughout, against tube tops at 0.725.
 
 ## Reversibility, and why it is the point
 
