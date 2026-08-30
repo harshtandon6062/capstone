@@ -71,7 +71,7 @@ def draw_welcome_ui(current_gesture, confidence, hold_progress):
     panel = np.zeros((280, 640, 3), dtype=np.uint8)
 
     cv2.putText(panel, "GESTURE-CONTROLLED ROBOTICS", (60, 35), font, 0.8, (255, 255, 255), 2)
-    cv2.putText(panel, "Hold a gesture for 3 seconds to select a task", (80, 60), font, 0.4, (180, 180, 180), 1)
+    cv2.putText(panel, "Hold a gesture for 4 seconds, or press 1-3", (80, 60), font, 0.4, (180, 180, 180), 1)
 
     for i, task in enumerate(TASKS):
         x = 20 + i * 210
