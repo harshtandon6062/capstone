@@ -15,3 +15,11 @@ venv/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local-only experiment/scratch folders — kept on disk, never pushed
+2nd_review/
+Test/
+WithUI/
+dynamic_gestures/
+extras/
+test_scripts/
